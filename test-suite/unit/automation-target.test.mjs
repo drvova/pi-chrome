@@ -75,8 +75,8 @@ function makeChrome(state, { withWindows = true, withStorage = true, withTabGrou
         return list.map((t) => ({ ...t }));
       },
       get: async (id) => { const t = tabs.get(id); if (!t) throw new Error(`No tab with id ${id}`); return { ...t }; },
-      create: async ({ url = "about:blank", active = false } = {}) => {
-        const tab = { id: alloc.tab(), windowId: userWindowId, url, active, groupId: -1 };
+      create: async ({ url = "about:blank", active = false, windowId = userWindowId } = {}) => {
+        const tab = { id: alloc.tab(), windowId, url, active, groupId: -1 };
         tabs.set(tab.id, tab);
         return { ...tab };
       },
@@ -205,6 +205,49 @@ async function run() {
     const groupsBefore = state.groups.size;
     await w.dispatch("page.navigate", { url: "https://pi.test/grouped-2", waitUntilLoad: false, sessionKey: SK, joinSessionGroup: true, sessionGroupTitle: groupTitle });
     ok(state.groups.size === groupsBefore, "group: reusing the automation tab does not create a second group");
+  }
+
+  // ===== tab.new joins the existing session group instead of creating one group per window. =====
+  {
+    const state = makeChromeState();
+    const w = loadWorker(makeChrome(state, { withTabGroups: true }));
+    const groupTitle = "Pi Session: alpha";
+    const nav = await w.dispatch("page.navigate", {
+      url: "https://pi.test/group-owner", waitUntilLoad: false,
+      sessionKey: SK, joinSessionGroup: true, sessionGroupTitle: groupTitle,
+    });
+    const navTab = state.tabs.get(nav.id);
+    const groupId = navTab.groupId;
+    const groupsBefore = state.groups.size;
+
+    const opened = await w.dispatch("tab.new", { url: "https://pi.test/new-tab", groupTitle, sessionKey: SK });
+    ok(state.groups.size === groupsBefore, "tab.new-group: did not create another same-session group");
+    ok(opened.tab.groupId === groupId, "tab.new-group: opened tab joined the existing session group");
+    ok(opened.tab.windowId === nav.windowId, "tab.new-group: opened tab was created in the existing group's window");
+
+    const forced = await w.dispatch("tab.new", { url: "https://pi.test/no-opt-out", groupTitle, group: false, sessionKey: SK });
+    ok(forced.tab.groupId === groupId, "tab.new-group: group:false is ignored; tab still joins the session group");
+    ok(state.groups.size === groupsBefore, "tab.new-group: group:false does not create another group");
+
+    const blankTitle = await w.dispatch("tab.new", { url: "https://pi.test/blank-title", groupTitle: "", group: false, sessionKey: SK });
+    ok(typeof blankTitle.tab.groupId === "number" && blankTitle.tab.groupId >= 0, "tab.new-group: groupTitle:'' still creates a grouped tab");
+    ok(blankTitle.group.title === "Pi", "tab.new-group: blank groupTitle falls back to a group instead of opting out");
+  }
+
+  // ===== tab.new never leaves an ungrouped tab behind when grouping fails. =====
+  {
+    const state = makeChromeState();
+    const chrome = makeChrome(state, { withTabGroups: true });
+    const w = loadWorker(chrome);
+    const tabsBefore = state.tabs.size;
+    chrome.tabs.group = async () => { throw new Error("group blew up"); };
+
+    await throwsWith(
+      () => w.dispatch("tab.new", { url: "https://pi.test/group-fail", groupTitle: "Pi Session: alpha", sessionKey: SK }),
+      /group blew up/,
+      "tab.new-group-fail: surfaces grouping error",
+    );
+    ok(state.tabs.size === tabsBefore, "tab.new-group-fail: closes the created tab instead of leaving it ungrouped");
   }
 
   // ===== Grouping is best-effort: a tabGroups failure must not break navigation. =====

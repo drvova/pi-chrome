@@ -1073,14 +1073,23 @@ async function groupRecord(groupId) {
   };
 }
 
-// Find an existing tab group in `windowId` whose title matches `title` (case-insensitive).
-// Used so all Pi-opened tabs collect into one group per window instead of spawning new ones.
+// Find existing tab groups whose title matches `title` (case-insensitive).
+// Same-window lookup is used when grouping an already-created tab. Any-window lookup is used before
+// creating a new Pi tab so one Pi session keeps one tab group and new tabs are created in that
+// group's window (Chrome tab groups cannot span windows).
 async function findGroupByTitle(windowId, title) {
   if (!chrome.tabGroups) return null;
   const wanted = cleanGroupTitle(title).toLowerCase();
   const groups = await chrome.tabGroups.query({ windowId }).catch(() => []);
   const match = groups.find((g) => (g.title || "").trim().toLowerCase() === wanted);
   return match ? match.id : null;
+}
+
+async function findGroupRecordByTitle(title) {
+  if (!chrome.tabGroups) return null;
+  const wanted = cleanGroupTitle(title).toLowerCase();
+  const groups = await chrome.tabGroups.query({}).catch(() => []);
+  return groups.find((g) => (g.title || "").trim().toLowerCase() === wanted) || null;
 }
 
 // Add `tab` to a tab group, then set title/color. If the tab is ungrouped, reuse an
@@ -1115,11 +1124,20 @@ async function dispatch(action, params) {
       return Promise.all(tabs.map(formatTab));
     }
     case "tab.new": {
-      const tab = await chrome.tabs.create({ url: params.url || "about:blank", active: true });
-      // Every Pi-opened tab joins a group by default. Pass groupTitle:"" (or group:false) to opt out.
-      const optOut = params.groupTitle === "" || params.group === false;
-      if (optOut && !params.groupColor) return formatTab(tab);
-      return groupTab(tab, params.groupTitle || "Pi", params.groupColor);
+      // Every Pi-opened tab must join a tab group. There is intentionally no opt-out: an ungrouped
+      // Pi-created tab is easy to lose among user tabs. If grouping fails after creation, close the
+      // tab best-effort before surfacing the error so tab.new never leaves an ungrouped Pi tab.
+      const groupTitle = params.groupTitle || "Pi";
+      const existingGroup = await findGroupRecordByTitle(groupTitle);
+      const createParams = { url: params.url || "about:blank", active: true };
+      if (existingGroup && typeof existingGroup.windowId === "number") createParams.windowId = existingGroup.windowId;
+      const tab = await chrome.tabs.create(createParams);
+      try {
+        return await groupTab(tab, groupTitle, params.groupColor);
+      } catch (error) {
+        if (typeof tab.id === "number") await chrome.tabs.remove(tab.id).catch(() => {});
+        throw error;
+      }
     }
     case "tab.activate": {
       // Management actions never auto-create an automation target (createOwnedTarget:false): with

@@ -844,13 +844,20 @@ export default function (pi: ExtensionAPI): void {
 		let wireParams: Record<string, unknown> = sessionKey !== undefined && params.sessionKey === undefined
 			? { ...params, sessionKey }
 			: params;
+		const sessionTitle = sessionCtx !== undefined ? sessionGroupTitle(sessionCtx) : undefined;
+		// Any tab Pi opens through tab.new/tab.group must use THIS session's group, even if a caller
+		// passes group:false or a custom groupTitle. This central guard covers chrome_tab plus internal
+		// callers such as chrome_launch(url).
+		if ((action === "tab.new" || action === "tab.group") && sessionTitle !== undefined) {
+			wireParams = { ...wireParams, groupTitle: sessionTitle };
+		}
 		// Any tab Pi *uses* (page.* interactions) should join this session's group, mirroring the
 		// auto-grouping that tab.new already does. Tagging the wire params lets getTabByParams pull
 		// the resolved tab into the session group on the service-worker side. We skip tab.* actions:
-		// tab.new/group group explicitly, and activate/close/ungroup/list must not.
-		const shouldJoinGroup = action.startsWith("page.") && sessionCtx !== undefined && params.sessionGroupTitle === undefined;
+		// tab.new/group are forced above, and activate/close/ungroup/list must not group tabs.
+		const shouldJoinGroup = action.startsWith("page.") && sessionTitle !== undefined && params.sessionGroupTitle === undefined;
 		if (shouldJoinGroup) {
-			wireParams = { ...wireParams, sessionGroupTitle: sessionGroupTitle(sessionCtx as ExtensionContext), joinSessionGroup: true };
+			wireParams = { ...wireParams, sessionGroupTitle: sessionTitle, joinSessionGroup: true };
 		}
 		return bridge.send(action, wireParams, timeoutMs, signal);
 	};
@@ -1279,7 +1286,7 @@ Usage rules:
 	pi.registerTool({
 		name: "chrome_tab",
 		label: "Chrome Tab",
-		description: "List, create, activate, close, group, ungroup, or inspect tabs in the user's existing Chrome profile via the companion extension. activate/close/group/ungroup require a target (targetId/urlIncludes/titleIncludes); with no target they act on this session's pi-chrome automation tab if one exists, and otherwise error rather than touching the user's active tab.",
+		description: "List, create, activate, close, group, ungroup, or inspect tabs in the user's existing Chrome profile via the companion extension. New/grouped tabs always use this session's Pi tab group. activate/close/group/ungroup require a target (targetId/urlIncludes/titleIncludes); with no target they act on this session's pi-chrome automation tab if one exists, and otherwise error rather than touching the user's active tab.",
 		promptSnippet: "List/open/activate/close/group existing Chrome tabs through the companion extension.",
 		parameters: Type.Object({
 			action: StringEnum(tabActionValues),
@@ -1287,18 +1294,18 @@ Usage rules:
 			targetId: Type.Optional(Type.String({ description: "Chrome tab id for activate/close/group/ungroup." })),
 			urlIncludes: Type.Optional(Type.String({ description: "Match the target tab by URL substring for activate/close/group/ungroup." })),
 			titleIncludes: Type.Optional(Type.String({ description: "Match the target tab by title substring for activate/close/group/ungroup." })),
-			group: Type.Optional(Type.Boolean({ description: "action=new only: pass false to open an ungrouped tab. By default every Pi-opened tab joins this session's own tab group." })),
-			groupTitle: Type.Optional(Type.String({ description: "Tab group title for action=group/new. Defaults to this Pi session's group ('Pi Session: <name-or-id>'). Pass an empty string on action=new to opt out of grouping." })),
+			group: Type.Optional(Type.Boolean({ description: "Deprecated; ignored. Pi-created tabs always join this session's own tab group." })),
+			groupTitle: Type.Optional(Type.String({ description: "Deprecated for action=new/group; ignored so one Pi session uses one tab group ('Pi Session: <name-or-id>')." })),
 			groupColor: Type.Optional(Type.String({ description: "Tab group color for action=group/new: grey, blue, red, yellow, green, pink, purple, cyan, or orange. Defaults to blue." })),
 			host: Type.Optional(Type.String()),
 			port: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx): Promise<ToolTextResult> {
 			const forwarded = { ...params } as typeof params & { groupTitle?: string };
-			// Default every Pi-opened/explicitly-grouped tab into this session's own group,
-			// named after the session display name (falling back to the session id), unless
-			// the caller specified a group title or opted out with group:false.
-			if ((params.action === "new" || params.action === "group") && params.groupTitle === undefined && params.group !== false) {
+			// Force every Pi-opened/explicitly-grouped tab into this session's own group,
+			// named after the session display name (falling back to the session id). There is
+			// intentionally no opt-out: one Pi session should create/use one tab group.
+			if (params.action === "new" || params.action === "group") {
 				forwarded.groupTitle = sessionGroupTitle(ctx);
 			}
 			const result = await authorizedBridgeSend(`tab.${params.action}`, forwarded, DEFAULT_TIMEOUT_MS, signal);

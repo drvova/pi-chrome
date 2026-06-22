@@ -9,6 +9,7 @@ All notable user-facing changes to `pi-chrome`.
   - **Survives `/reload` and Chrome service-worker restarts.** Ownership is tracked by id and mirrored to `chrome.storage.session`, so the window is reused rather than orphaned.
   - **Guarded tab management.** `chrome_tab` `activate`/`close`/`group`/`ungroup` with no target now act on the session's automation tab if present, otherwise error — they no longer fall back to (or spawn a throwaway tab to touch) your active tab.
   - **Safe, non-blocking cleanup.** The owned target is closed on `/chrome revoke` and on real session end (never on `/reload`); cleanup only ever closes the calling session's own window/tab — never user tabs/windows or another session's target — and is fire-and-forget so it never blocks `/quit`, `/reload`, or session end.
+- **One session, one tab group.** `chrome_tab new` now reuses this session's existing Pi tab group even when another Chrome window is focused, creating the tab in that group's window because Chrome tab groups cannot span windows. The old `group:false` / `groupTitle:""` opt-out is ignored; Pi-created tabs are never intentionally left ungrouped, and a grouping failure closes the just-created tab before returning an error.
 
 ## 0.15.38 — 2026-06-07
 
