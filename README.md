@@ -173,6 +173,17 @@ Agents can verify page state immediately instead of blindly retrying.
 
 Each tool is documented inline in Pi — agents see the parameters and gotchas (Chrome input, CSP limits, file upload behavior) without trial-and-error.
 
+### Tab/window isolation
+
+pi-chrome never overwrites the tab you're currently looking at. The first time a chrome_* action runs without an explicit target, pi-chrome opens a **dedicated automation window** (falling back to a dedicated tab if a separate window can't be created) and reuses it for the rest of the session. Your existing tabs and windows are left untouched. To point pi-chrome at a specific tab you already have open, pass `targetId`/`urlIncludes`/`titleIncludes`.
+
+Details:
+
+- **Per session.** Each Pi session owns its *own* automation window, so concurrent sessions (which all share one companion extension) never fight over a tab.
+- **Survives `/reload` and Chrome service-worker restarts.** Ownership is tracked by id and mirrored to `chrome.storage.session`, so the window is reused rather than orphaned.
+- **Cleanup is safe.** The dedicated target is closed when you revoke Chrome control (`/chrome revoke`) and on real session end — never on `/reload`. Cleanup only ever closes the calling session's own automation window/tab; user tabs/windows and other sessions' targets are never closed. Cleanup is fire-and-forget so it never blocks `/quit`, `/reload`, or session end.
+- **Management actions are guarded.** `chrome_tab` `activate`/`close`/`group`/`ungroup` with no explicit target act on the session's automation tab if it exists, otherwise they error instead of touching your active tab.
+
 ### Known limits vs. human Chrome use
 
 pi-chrome is strongest on web-page workflows exposed through DOM, screenshots, tabs, and Chrome input. It is not a full human/OS substitute. Current limitations include native Chrome/OS surfaces (print/save dialogs, permission bubbles, password-manager prompts), cross-origin iframe DOM access, rich multitouch/pinch/stylus gestures, visual CAPTCHA/bot challenges, hardware-backed auth (passkeys/security keys/biometrics), and arbitrary OS app interaction. For strict-CSP pages, use screenshot + coordinate input when `chrome_snapshot`/`chrome_evaluate` are blocked.

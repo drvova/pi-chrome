@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `pi-chrome`.
 
+## 0.15.39 — 2026-06-07
+
+- **Dedicated automation tab/window (no more hijacking your active tab).** When a chrome_* action runs without an explicit target, pi-chrome now opens and reuses a dedicated automation window it owns (falling back to a dedicated tab if a separate window can't be created) instead of navigating whatever tab you currently have open. Your existing tabs/windows are left untouched. Pass `targetId`/`urlIncludes`/`titleIncludes` to act on a specific existing tab.
+  - **Per session.** Ownership is scoped to the calling Pi session, so concurrent sessions sharing one companion extension each get their own automation window instead of fighting over a tab.
+  - **Survives `/reload` and Chrome service-worker restarts.** Ownership is tracked by id and mirrored to `chrome.storage.session`, so the window is reused rather than orphaned.
+  - **Guarded tab management.** `chrome_tab` `activate`/`close`/`group`/`ungroup` with no target now act on the session's automation tab if present, otherwise error — they no longer fall back to (or spawn a throwaway tab to touch) your active tab.
+  - **Safe, non-blocking cleanup.** The owned target is closed on `/chrome revoke` and on real session end (never on `/reload`); cleanup only ever closes the calling session's own window/tab — never user tabs/windows or another session's target — and is fire-and-forget so it never blocks `/quit`, `/reload`, or session end.
+
 ## 0.15.38 — 2026-06-07
 
 - **Overlay-safe click/fill fallbacks.** `chrome_click` and `chrome_fill` now fall back to DOM-dispatched click/value events when Chrome's debugger input path is blocked by another extension overlay (for example password-manager/autofill UI), unless `domFallback:false` is passed.

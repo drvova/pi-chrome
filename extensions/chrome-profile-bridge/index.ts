@@ -729,12 +729,23 @@ export default function (pi: ExtensionAPI): void {
 		pi.setActiveTools(activeToolNamesWithoutChrome());
 	};
 
+	// Close THIS session's dedicated automation window/tab. Fire-and-forget and best-effort: it
+	// must never block /quit, /reload, revoke, or session end, and the service-worker side only
+	// ever closes targets this session created itself (never user tabs/windows, never another
+	// session's target). Errors (bridge down, target already closed) are intentionally swallowed.
+	const cleanupAutomationTargetBestEffort = (): void => {
+		const sessionKey = sessionKeyFor(sessionCtx);
+		void bridge.send("automation.cleanup", sessionKey !== undefined ? { sessionKey } : {}, 3_000).catch(() => undefined);
+	};
+
 	const lockChromeControl = (): void => {
 		clearAuthExpiryTimer();
 		clearCountdownInterval();
 		chromeAuthorizedUntil = undefined;
 		persistAuth();
 		deactivateChromeTools();
+		// Revoking control ends pi-chrome's automation for this session; tidy up the target we own.
+		cleanupAutomationTargetBestEffort();
 	};
 
 	const authSummary = (): string => {
@@ -779,6 +790,15 @@ export default function (pi: ExtensionAPI): void {
 		return "";
 	};
 
+	// Stable per-session key the service worker uses to scope its dedicated automation tab/window
+	// to *this* session (one extension brokers all sessions). The session id is stable across
+	// /reload, so the automation target is reused rather than orphaned. Returns undefined only
+	// before session_start, in which case the worker uses its default bucket.
+	const sessionKeyFor = (ctx: ExtensionContext | undefined): string | undefined => {
+		const id = ctx?.sessionManager?.getSessionId?.();
+		return typeof id === "string" && id ? `session:${id}` : undefined;
+	};
+
 	const updateChromeStatus = (ctx: ExtensionContext): void => {
 		if (chromeControlAuthorized()) {
 			ctx.ui.setStatus("chrome", ctx.ui.theme.fg("success", "●") + " Chrome Bridge" + authCountdownLabel());
@@ -818,14 +838,20 @@ export default function (pi: ExtensionAPI): void {
 
 	const authorizedBridgeSend = (action: string, params: Record<string, unknown>, timeoutMs = DEFAULT_TIMEOUT_MS, signal?: AbortSignal): Promise<unknown> => {
 		requireChromeControlAuthorized();
+		// Scope the service worker's dedicated automation tab/window to this session. Forwarded on
+		// every action so tab resolution, navigation, and cleanup all agree on which target is ours.
+		const sessionKey = sessionKeyFor(sessionCtx);
+		let wireParams: Record<string, unknown> = sessionKey !== undefined && params.sessionKey === undefined
+			? { ...params, sessionKey }
+			: params;
 		// Any tab Pi *uses* (page.* interactions) should join this session's group, mirroring the
 		// auto-grouping that tab.new already does. Tagging the wire params lets getTabByParams pull
-		// the resolved (e.g. active) tab into the session group on the service-worker side. We skip
-		// tab.* actions: tab.new/group group explicitly, and activate/close/ungroup/list must not.
+		// the resolved tab into the session group on the service-worker side. We skip tab.* actions:
+		// tab.new/group group explicitly, and activate/close/ungroup/list must not.
 		const shouldJoinGroup = action.startsWith("page.") && sessionCtx !== undefined && params.sessionGroupTitle === undefined;
-		const wireParams = shouldJoinGroup
-			? { ...params, sessionGroupTitle: sessionGroupTitle(sessionCtx as ExtensionContext), joinSessionGroup: true }
-			: params;
+		if (shouldJoinGroup) {
+			wireParams = { ...wireParams, sessionGroupTitle: sessionGroupTitle(sessionCtx as ExtensionContext), joinSessionGroup: true };
+		}
 		return bridge.send(action, wireParams, timeoutMs, signal);
 	};
 
@@ -855,9 +881,17 @@ export default function (pi: ExtensionAPI): void {
 		updateChromeStatus(ctx);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (event) => {
 		clearAuthExpiryTimer();
 		clearCountdownInterval();
+		// Tidy up this session's dedicated automation window on real session end, but NOT on
+		// "reload": /reload tears down and re-evaluates this module while the *same* session
+		// (same sessionKey) continues, so we keep the window so it is reused, not churned. The
+		// call is fire-and-forget and runs before bridge.stop() so it never blocks shutdown.
+		// (Owner-session quit may not deliver in time since stop() closes the bridge server;
+		// that only ever leaves a clearly pi-chrome window for the user to close — never a user
+		// tab — and /chrome revoke remains the reliable, bridge-alive cleanup path.)
+		if (event?.reason !== "reload") cleanupAutomationTargetBestEffort();
 		bridge.stop();
 		if (globalState[PI_CHROME_GLOBAL_KEY]?.token === instanceToken) {
 			delete globalState[PI_CHROME_GLOBAL_KEY];
@@ -871,6 +905,11 @@ export default function (pi: ExtensionAPI): void {
 		const primer = `
 <chrome-profile-bridge>
 Chrome control is available through the chrome_* tools via a companion Chrome extension installed in the user's normal Chrome profile. Tools target the existing signed-in profile: no remote-debug port, no throwaway profile.
+
+Tab/window isolation (important):
+- pi-chrome owns a dedicated automation window/tab. When a chrome_* tool runs with no explicit target, it acts on that pi-chrome-owned target — it never reuses or overwrites the user's currently active tab. The dedicated target is created on first use and reused afterward.
+- To act on a specific *existing* tab (e.g. one the user asks you to use), pass targetId/urlIncludes/titleIncludes. Without one of those, assume you are working in pi-chrome's own automation target.
+- pi-chrome's automation target may be closed automatically when Chrome control is revoked; user tabs/windows are never closed by pi-chrome.
 
 Capability model (important):
 - Interactive controls (click/type/fill/key/hover/drag/scroll/tap) use Chrome's real input layer via chrome.debugger / CDP. Events satisfy normal user-activation gates.
@@ -1240,7 +1279,7 @@ Usage rules:
 	pi.registerTool({
 		name: "chrome_tab",
 		label: "Chrome Tab",
-		description: "List, create, activate, close, group, ungroup, or inspect tabs in the user's existing Chrome profile via the companion extension.",
+		description: "List, create, activate, close, group, ungroup, or inspect tabs in the user's existing Chrome profile via the companion extension. activate/close/group/ungroup require a target (targetId/urlIncludes/titleIncludes); with no target they act on this session's pi-chrome automation tab if one exists, and otherwise error rather than touching the user's active tab.",
 		promptSnippet: "List/open/activate/close/group existing Chrome tabs through the companion extension.",
 		parameters: Type.Object({
 			action: StringEnum(tabActionValues),
@@ -1387,7 +1426,7 @@ Usage rules:
 		name: "chrome_navigate",
 		label: "Chrome Navigate",
 		description:
-			"Navigate an existing Chrome tab to a URL via the companion extension. Runs in the background by default; pass background=false to focus Chrome and activate the tab so the user can watch. Optionally waits for load completion.",
+			"Navigate a Chrome tab to a URL via the companion extension. With no target, navigation goes to pi-chrome's own dedicated automation window/tab — it never replaces the user's active tab. Pass targetId/urlIncludes/titleIncludes only to act on a specific existing tab. Runs in the background by default; pass background=false to focus Chrome and activate the tab so the user can watch. Optionally waits for load completion.",
 		promptSnippet: "Navigate a Chrome tab in the user's existing profile.",
 		parameters: Type.Object({
 			url: Type.String(),

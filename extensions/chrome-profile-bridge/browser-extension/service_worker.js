@@ -10,6 +10,151 @@ const SCRIPTING_TIMEOUT_MS = 8_000;
 const ATTACH_TIMEOUT_MS = 3_000;
 let polling = false;
 
+// =================== pi-chrome automation target ownership ===================
+// pi-chrome must never hijack the user's active tab. When a page/navigation action runs without
+// an explicit target (targetId/urlIncludes/titleIncludes), we route it to a dedicated automation
+// target that pi-chrome created and owns. We prefer a separate Chrome window so the user's
+// windows are left untouched; if the windows API is unavailable we fall back to a dedicated tab.
+//
+// Ownership is SESSION-SCOPED, keyed by the calling Pi session's `sessionKey` (forwarded on the
+// wire). One Chrome extension / service worker brokers commands for *all* Pi sessions (see the
+// client/server bridge in index.ts), so a single global target would make concurrent sessions
+// fight over one window. A per-session map gives each session its own isolated window and lets
+// cleanup close exactly that session's target — never another session's, never a user's.
+//
+// State is mirrored to chrome.storage.session so a service-worker restart (MV3 can suspend the
+// worker at any time) re-hydrates ownership instead of orphaning the window it already created.
+// storage.session is cleared on browser restart; any window restored by Chrome's session-restore
+// is then untracked and simply left alone (we only ever close ids we still recognize as ours).
+const automationTargets = new Map(); // sessionKey -> { windowId?: number, tabId: number }
+const DEFAULT_SESSION_KEY = "__default__";
+const AUTOMATION_STORAGE_KEY = "piChromeAutomationTargets";
+let automationHydrated = false;
+
+function sessionKeyOf(params) {
+  return params && typeof params.sessionKey === "string" && params.sessionKey
+    ? params.sessionKey
+    : DEFAULT_SESSION_KEY;
+}
+
+// Re-hydrate the in-memory ownership map from storage.session once per worker lifetime. Best
+// effort: storage may be unavailable on old Chrome, and a failure just means we may create a
+// fresh window (a harmless orphan) rather than reusing one.
+async function hydrateAutomationTargets() {
+  if (automationHydrated) return;
+  automationHydrated = true;
+  try {
+    const stored = await chrome.storage?.session?.get?.(AUTOMATION_STORAGE_KEY);
+    const saved = stored && stored[AUTOMATION_STORAGE_KEY];
+    if (saved && typeof saved === "object") {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value && typeof value.tabId === "number") {
+          automationTargets.set(key, {
+            windowId: typeof value.windowId === "number" ? value.windowId : undefined,
+            tabId: value.tabId,
+          });
+        }
+      }
+    }
+  } catch {
+    // Ignore: treat as "no persisted state".
+  }
+}
+
+async function persistAutomationTargets() {
+  try {
+    const obj = {};
+    for (const [key, value] of automationTargets) {
+      obj[key] = { windowId: typeof value.windowId === "number" ? value.windowId : null, tabId: value.tabId };
+    }
+    await chrome.storage?.session?.set?.({ [AUTOMATION_STORAGE_KEY]: obj });
+  } catch {
+    // Ignore: persistence is an optimization, not a correctness requirement.
+  }
+}
+
+// True if `tabId` is a pi-chrome-owned automation tab. Pass `sessionKey` to check a specific
+// session; omit it to check ownership across *any* session (used as a safety predicate so we
+// never operate on a user-created tab). Never infers ownership from "active".
+function isPiChromeOwnedTarget(tabId, sessionKey) {
+  if (typeof tabId !== "number") return false;
+  if (sessionKey !== undefined) {
+    const t = automationTargets.get(sessionKey);
+    return !!t && t.tabId === tabId;
+  }
+  for (const t of automationTargets.values()) if (t.tabId === tabId) return true;
+  return false;
+}
+
+// Create a fresh dedicated automation target for `sessionKey`. Prefer an isolated window; fall
+// back to a tab. Structured so a window can be the default while tab-fallback stays a one-liner.
+async function createAutomationTarget(sessionKey) {
+  if (chrome.windows && typeof chrome.windows.create === "function") {
+    try {
+      const win = await chrome.windows.create({ url: "about:blank", focused: false });
+      const created = win && Array.isArray(win.tabs) ? win.tabs[0] : undefined;
+      if (created && typeof created.id === "number") {
+        automationTargets.set(sessionKey, { windowId: typeof win.id === "number" ? win.id : undefined, tabId: created.id });
+        await persistAutomationTargets();
+        return created;
+      }
+    } catch {
+      // Window creation can fail (policy, headless, etc.); fall back to a dedicated tab below.
+    }
+  }
+  // Tab fallback: the tab lives in a pre-existing (user/shared) window we did NOT create, so we
+  // must leave windowId unset — cleanup then closes only our tab, never the user's window.
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  automationTargets.set(sessionKey, { windowId: undefined, tabId: typeof tab.id === "number" ? tab.id : undefined });
+  await persistAutomationTargets();
+  return tab;
+}
+
+// Return the session's owned automation target if it still exists, else null. Robust to the user
+// (or Chrome) having closed it: a stale entry is forgotten so callers can recreate cleanly.
+async function resolveOwnedAutomationTarget(sessionKey) {
+  await hydrateAutomationTargets();
+  const t = automationTargets.get(sessionKey);
+  if (!t || typeof t.tabId !== "number") return null;
+  const existing = await chrome.tabs.get(t.tabId).catch(() => null);
+  if (existing && typeof existing.id === "number") return existing;
+  automationTargets.delete(sessionKey);
+  await persistAutomationTargets();
+  return null;
+}
+
+// Return the session's dedicated automation target, creating it on first use (or after the user
+// closed it). Used by page/navigation actions that need a live surface to drive.
+async function getOrCreateAutomationTarget(sessionKey) {
+  return (await resolveOwnedAutomationTarget(sessionKey)) || createAutomationTarget(sessionKey);
+}
+
+// Close only the session's pi-chrome-owned window/tab, and only if it still exists. Never touches
+// user tabs/windows or other sessions' targets. Safe to call repeatedly and when nothing exists.
+async function cleanupAutomationTarget(sessionKey) {
+  await hydrateAutomationTargets();
+  const t = automationTargets.get(sessionKey);
+  automationTargets.delete(sessionKey);
+  await persistAutomationTargets();
+  if (!t) return { closedWindowId: null, closedTabId: null };
+  const { windowId, tabId } = t;
+  if (typeof windowId === "number" && chrome.windows && typeof chrome.windows.remove === "function") {
+    const win = await chrome.windows.get(windowId).catch(() => null);
+    if (win) {
+      await chrome.windows.remove(windowId).catch(() => {});
+      return { closedWindowId: windowId, closedTabId: typeof tabId === "number" ? tabId : null };
+    }
+  }
+  if (typeof tabId === "number") {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab) {
+      await chrome.tabs.remove(tabId).catch(() => {});
+      return { closedWindowId: null, closedTabId: tabId };
+    }
+  }
+  return { closedWindowId: null, closedTabId: null };
+}
+
 function withTimeout(promise, ms, label, onTimeout) {
   let timer;
   return Promise.race([
@@ -977,21 +1122,24 @@ async function dispatch(action, params) {
       return groupTab(tab, params.groupTitle || "Pi", params.groupColor);
     }
     case "tab.activate": {
-      const tab = await getTabByParams(params);
+      // Management actions never auto-create an automation target (createOwnedTarget:false): with
+      // no explicit target they act on an owned target if one exists, else error — they must never
+      // fall back to (or spawn a tab just to touch) the user's active tab.
+      const tab = await getTabByParams(params, { createOwnedTarget: false });
       await chrome.windows.update(tab.windowId, { focused: true });
       return formatTab(await chrome.tabs.update(tab.id, { active: true }));
     }
     case "tab.group": {
-      const tab = await getTabByParams(params);
+      const tab = await getTabByParams(params, { createOwnedTarget: false });
       return groupTab(tab, params.groupTitle || "Pi", params.groupColor);
     }
     case "tab.ungroup": {
-      const tab = await getTabByParams(params);
+      const tab = await getTabByParams(params, { createOwnedTarget: false });
       if (typeof tab.groupId === "number" && tab.groupId >= 0) await chrome.tabs.ungroup(tab.id);
       return formatTab(await chrome.tabs.get(tab.id));
     }
     case "tab.close": {
-      const tab = await getTabByParams(params);
+      const tab = await getTabByParams(params, { createOwnedTarget: false });
       await chrome.tabs.remove(tab.id);
       return { closed: tab.id };
     }
@@ -1073,6 +1221,16 @@ async function dispatch(action, params) {
     }
     case "page.screenshot":
       return takeScreenshot(params);
+    case "automation.status": {
+      // Report this session's owned automation target (ids only). Used for diagnostics/tests.
+      await hydrateAutomationTargets();
+      const t = automationTargets.get(sessionKeyOf(params));
+      return { windowId: t?.windowId ?? null, tabId: t?.tabId ?? null };
+    }
+    case "automation.cleanup":
+      // Close only THIS session's pi-chrome-owned window/tab. Never touches user tabs/windows or
+      // another Pi session's target.
+      return cleanupAutomationTarget(sessionKeyOf(params));
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -1094,7 +1252,23 @@ async function formatTab(tab) {
   };
 }
 
-async function getTabByParams(params) {
+// Resolve which Chrome tab an action targets.
+//
+// Explicit targeting (targetId / urlIncludes / titleIncludes) is unchanged: callers can still act
+// on any existing tab, including a user tab, when they ask for it by name. Only the implicit
+// "no target given" case changed — it used to grab the user's *active* tab (and page.navigate
+// would then overwrite it); it now resolves to this Pi session's dedicated automation target.
+//
+// `createOwnedTarget` controls the implicit case:
+//   - true  (default): create the automation target on first use. Used by every page/content
+//     action — page.navigate, click/type/fill/key/hover/drag/scroll/tap/upload, snapshot,
+//     inspect, evaluate, screenshot, waitFor, console/network list, probe. These need a live
+//     surface to drive, so auto-creating is correct and they no longer touch the user's tab.
+//   - false: do NOT create. Used by tab.activate/close/group/ungroup (tab *management*): with no
+//     explicit target they operate on an already-owned automation target if one exists, else
+//     throw asking for an explicit target — so e.g. `chrome_tab close` can never silently close
+//     the user's active tab the way it used to, and never spawns a throwaway tab just to close it.
+async function getTabByParams(params, { createOwnedTarget = true } = {}) {
   const tabs = await chrome.tabs.query({});
   let tab;
   if (params.targetId !== undefined) {
@@ -1119,8 +1293,20 @@ async function getTabByParams(params) {
   } else if (params.titleIncludes) {
     tab = tabs.find((candidate) => (candidate.title || "").includes(params.titleIncludes));
   } else {
-    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    tab = active[0] || tabs.find((candidate) => candidate.active) || tabs[0];
+    // No explicit target: use this session's dedicated automation target instead of hijacking the
+    // user's active tab. This keeps human browsing and Pi automation separated — navigating here
+    // never replaces whatever the user currently has open. Callers that *want* a specific
+    // existing tab pass targetId/urlIncludes/titleIncludes above.
+    const sessionKey = sessionKeyOf(params);
+    tab = createOwnedTarget
+      ? await getOrCreateAutomationTarget(sessionKey)
+      : await resolveOwnedAutomationTarget(sessionKey);
+    if (!tab) {
+      throw new Error(
+        "No target tab specified and this Pi session has no automation tab yet. " +
+        "Pass targetId/urlIncludes/titleIncludes, or run chrome_navigate first.",
+      );
+    }
   }
   if (!tab?.id) throw new Error("No matching Chrome tab found");
   const url = tab.url || "";
