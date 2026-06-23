@@ -86,9 +86,19 @@ function isPiChromeOwnedTarget(tabId, sessionKey) {
   return false;
 }
 
-// Create a fresh dedicated automation target for `sessionKey`. Prefer an isolated window; fall
-// back to a tab. Structured so a window can be the default while tab-fallback stays a one-liner.
-async function createAutomationTarget(sessionKey) {
+// Create a fresh automation target for `sessionKey`. If this session already has a tab group,
+// create the tab inside that group's window so one Pi session keeps one Chrome tab group (Chrome
+// groups cannot span windows). If no group exists yet, prefer an isolated window; fall back to a
+// tab. When the tab is created in a pre-existing group window, leave windowId unset so cleanup only
+// closes our tab, never that whole window.
+async function createAutomationTarget(sessionKey, groupTitle) {
+  const existingGroup = groupTitle ? await findGroupRecordByTitle(groupTitle) : null;
+  if (existingGroup && typeof existingGroup.windowId === "number") {
+    const tab = await chrome.tabs.create({ url: "about:blank", active: false, windowId: existingGroup.windowId });
+    automationTargets.set(sessionKey, { windowId: undefined, tabId: typeof tab.id === "number" ? tab.id : undefined });
+    await persistAutomationTargets();
+    return tab;
+  }
   if (chrome.windows && typeof chrome.windows.create === "function") {
     try {
       const win = await chrome.windows.create({ url: "about:blank", focused: false });
@@ -125,8 +135,8 @@ async function resolveOwnedAutomationTarget(sessionKey) {
 
 // Return the session's dedicated automation target, creating it on first use (or after the user
 // closed it). Used by page/navigation actions that need a live surface to drive.
-async function getOrCreateAutomationTarget(sessionKey) {
-  return (await resolveOwnedAutomationTarget(sessionKey)) || createAutomationTarget(sessionKey);
+async function getOrCreateAutomationTarget(sessionKey, groupTitle) {
+  return (await resolveOwnedAutomationTarget(sessionKey)) || createAutomationTarget(sessionKey, groupTitle);
 }
 
 // Close only the session's pi-chrome-owned window/tab, and only if it still exists. Never touches
@@ -1317,7 +1327,7 @@ async function getTabByParams(params, { createOwnedTarget = true } = {}) {
     // existing tab pass targetId/urlIncludes/titleIncludes above.
     const sessionKey = sessionKeyOf(params);
     tab = createOwnedTarget
-      ? await getOrCreateAutomationTarget(sessionKey)
+      ? await getOrCreateAutomationTarget(sessionKey, params.sessionGroupTitle)
       : await resolveOwnedAutomationTarget(sessionKey);
     if (!tab) {
       throw new Error(

@@ -232,6 +232,14 @@ async function run() {
     const blankTitle = await w.dispatch("tab.new", { url: "https://pi.test/blank-title", groupTitle: "", group: false, sessionKey: SK });
     ok(typeof blankTitle.tab.groupId === "number" && blankTitle.tab.groupId >= 0, "tab.new-group: groupTitle:'' still creates a grouped tab");
     ok(blankTitle.group.title === "Pi", "tab.new-group: blank groupTitle falls back to a group instead of opting out");
+
+    const nav2 = await w.dispatch("page.navigate", {
+      url: "https://pi.test/new-automation-target", waitUntilLoad: false,
+      sessionKey: "session:beta", joinSessionGroup: true, sessionGroupTitle: groupTitle,
+    });
+    ok(state.groups.size === groupsBefore + 1, "automation-target-group: reused the existing session group, only blank-title Pi group was extra");
+    ok(nav2.groupId === groupId, "automation-target-group: new automation target joined the existing session group");
+    ok(nav2.windowId === nav.windowId, "automation-target-group: new automation target was created in the existing group's window");
   }
 
   // ===== tab.new never leaves an ungrouped tab behind when grouping fails. =====

@@ -2,6 +2,10 @@
 
 All notable user-facing changes to `pi-chrome`.
 
+## 0.15.40 — 2026-06-22
+
+- **Automation targets reuse the session tab group.** When `chrome_navigate` / implicit page actions create a new pi-chrome automation tab, it is now created in this session's existing tab-group window when possible and joins that same group, avoiding duplicate same-title `Pi Session: ...` groups.
+
 ## 0.15.39 — 2026-06-07
 
 - **Dedicated automation tab/window (no more hijacking your active tab).** When a chrome_* action runs without an explicit target, pi-chrome now opens and reuses a dedicated automation window it owns (falling back to a dedicated tab if a separate window can't be created) instead of navigating whatever tab you currently have open. Your existing tabs/windows are left untouched. Pass `targetId`/`urlIncludes`/`titleIncludes` to act on a specific existing tab.
