@@ -66,16 +66,11 @@ Second doctor run should show all checks passing.
 
 ## What it can do
 
-Pi gets browser tools for:
-
-- **Tabs** — list, open, activate, close, launch Chrome.
-- **Inspect** — page snapshots, element search/inspection, screenshots, JS evaluation.
-- **Navigate/wait** — open URLs, wait for page state.
-- **Interact** — click, type, fill, key, hover, drag, scroll, tap.
-- **Files** — upload files through `<input type=file>` without native picker.
-- **Observe** — console logs, network requests, response bodies.
-
-Input tools return structured verification data. Pass `includeSnapshot: true` on click/type/fill/key calls to get fresh page state in same result.
+- Read and summarize pages you're already signed into.
+- Click, type, fill forms, scroll, drag, tap, and upload files.
+- Capture screenshots for bugs, PRs, and demos.
+- Inspect console logs and captured `fetch`/`XMLHttpRequest` responses.
+- Manage tabs without taking over your active window.
 
 Tool parameters and gotchas are documented inline in Pi.
 
