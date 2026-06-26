@@ -64,20 +64,6 @@ Second doctor run should show all checks passing.
 
 ---
 
-## Quick start
-
-After install + authorize, try:
-
-```text
-Look at my GitHub notifications tab and triage which PRs
-need my review today, sorted by staleness.
-Don't click anything yet — just read and summarize.
-```
-
-More examples: [`docs/EXAMPLES.md`](./docs/EXAMPLES.md).
-
----
-
 ## What it can do
 
 Pi gets browser tools for:
