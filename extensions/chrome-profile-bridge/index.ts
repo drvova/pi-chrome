@@ -718,15 +718,40 @@ export default function (pi: ExtensionAPI): void {
 		countdownInterval = undefined;
 	};
 
-	const activeToolNamesWithoutChrome = (): string[] => pi.getActiveTools().filter((name) => !CHROME_TOOL_NAME_SET.has(name));
+	const chromeToolsActive = (tools = pi.getActiveTools()): boolean => tools.some((name) => CHROME_TOOL_NAME_SET.has(name));
 
-	const activateChromeTools = (): void => {
+	const activateChromeTools = (): boolean => {
 		registerChromeTools(pi);
-		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...CHROME_TOOL_NAMES])]);
+		const before = pi.getActiveTools();
+		const next = [...new Set([...before, ...CHROME_TOOL_NAMES])];
+		pi.setActiveTools(next);
+		return !chromeToolsActive(before) && chromeToolsActive(next);
 	};
 
-	const deactivateChromeTools = (): void => {
-		pi.setActiveTools(activeToolNamesWithoutChrome());
+	const deactivateChromeTools = (): boolean => {
+		const before = pi.getActiveTools();
+		pi.setActiveTools(before.filter((name) => !CHROME_TOOL_NAME_SET.has(name)));
+		return chromeToolsActive(before);
+	};
+
+	const logChromeToolChange = (action: "authorized" | "revoked" | "expired", label?: string): void => {
+		const enabled = action === "authorized";
+		const content = enabled
+			? `Chrome tools enabled by /chrome authorize${label ? ` (${label})` : ""}.`
+			: action === "expired"
+				? "Chrome tools disabled because /chrome authorize grant expired."
+				: "Chrome tools disabled by /chrome revoke.";
+		pi.sendMessage({
+			customType: "pi-chrome-tool-change",
+			content,
+			display: true,
+			details: {
+				action,
+				tools: [...CHROME_TOOL_NAMES],
+				authorizedUntil: chromeAuthorizedUntil,
+				at: Date.now(),
+			},
+		}, { triggerTurn: false });
 	};
 
 	// Close THIS session's dedicated automation window/tab. Fire-and-forget and best-effort: it
@@ -738,12 +763,13 @@ export default function (pi: ExtensionAPI): void {
 		void bridge.send("automation.cleanup", sessionKey !== undefined ? { sessionKey } : {}, 3_000).catch(() => undefined);
 	};
 
-	const lockChromeControl = (): void => {
+	const lockChromeControl = (logAction?: "revoked" | "expired"): void => {
 		clearAuthExpiryTimer();
 		clearCountdownInterval();
+		const hadChromeTools = deactivateChromeTools();
+		if (logAction && hadChromeTools) logChromeToolChange(logAction);
 		chromeAuthorizedUntil = undefined;
 		persistAuth();
-		deactivateChromeTools();
 		// Revoking control ends pi-chrome's automation for this session; tidy up the target we own.
 		cleanupAutomationTargetBestEffort();
 	};
@@ -760,7 +786,7 @@ export default function (pi: ExtensionAPI): void {
 	const chromeControlAuthorized = (): boolean => {
 		if (chromeAuthorizedUntil === "indefinite") return true;
 		if (typeof chromeAuthorizedUntil === "number" && chromeAuthorizedUntil > Date.now()) return true;
-		if (chromeAuthorizedUntil !== undefined) lockChromeControl();
+		if (chromeAuthorizedUntil !== undefined) lockChromeControl("expired");
 		return false;
 	};
 
@@ -827,7 +853,7 @@ export default function (pi: ExtensionAPI): void {
 		authExpiryTimer = setTimeout(() => {
 			if (chromeAuthorizedUntil !== until) return;
 			try {
-				lockChromeControl();
+				lockChromeControl("expired");
 				ctx.ui.notify("Chrome control authorization expired. Run /chrome authorize to allow chrome_* tools again.", "info");
 				updateChromeStatus(ctx);
 			} catch (error) {
@@ -1040,6 +1066,7 @@ Usage rules:
 		chromeAuthorizedUntil = until;
 		persistAuth();
 		activateChromeTools();
+		logChromeToolChange("authorized", label);
 		scheduleAuthExpiry(ctx, until);
 		ctx.ui.notify(`Chrome control authorized for ${label}.`, "info");
 		updateChromeStatus(ctx);
@@ -1063,7 +1090,7 @@ Usage rules:
 	};
 
 	const revokeHandler = (ctx: ExtensionContext) => {
-		lockChromeControl();
+		lockChromeControl("revoked");
 		ctx.ui.notify("Chrome control locked. Run /chrome authorize to allow chrome_* tools again.", "info");
 		updateChromeStatus(ctx);
 	};
