@@ -734,10 +734,13 @@ export default function (pi: ExtensionAPI): void {
 		return chromeToolsActive(before);
 	};
 
-	const logChromeToolChange = (action: "authorized" | "revoked" | "expired", label?: string): void => {
+	const logChromeToolChange = (
+		action: "authorized" | "revoked" | "expired",
+		options: { label?: string; authorizedUntil?: number | "indefinite" } = {},
+	): void => {
 		const enabled = action === "authorized";
 		const content = enabled
-			? `Chrome tools enabled by /chrome authorize${label ? ` (${label})` : ""}.`
+			? `Chrome tools enabled by /chrome authorize${options.label ? ` (${options.label})` : ""}.`
 			: action === "expired"
 				? "Chrome tools disabled because /chrome authorize grant expired."
 				: "Chrome tools disabled by /chrome revoke.";
@@ -748,7 +751,7 @@ export default function (pi: ExtensionAPI): void {
 			details: {
 				action,
 				tools: [...CHROME_TOOL_NAMES],
-				authorizedUntil: chromeAuthorizedUntil,
+				authorizedUntil: options.authorizedUntil,
 				at: Date.now(),
 			},
 		}, { triggerTurn: false });
@@ -767,7 +770,7 @@ export default function (pi: ExtensionAPI): void {
 		clearAuthExpiryTimer();
 		clearCountdownInterval();
 		const hadChromeTools = deactivateChromeTools();
-		if (logAction && hadChromeTools) logChromeToolChange(logAction);
+		if (logAction && hadChromeTools) logChromeToolChange(logAction, { authorizedUntil: undefined });
 		chromeAuthorizedUntil = undefined;
 		persistAuth();
 		// Revoking control ends pi-chrome's automation for this session; tidy up the target we own.
@@ -1066,7 +1069,7 @@ Usage rules:
 		chromeAuthorizedUntil = until;
 		persistAuth();
 		activateChromeTools();
-		logChromeToolChange("authorized", label);
+		logChromeToolChange("authorized", { label, authorizedUntil: until });
 		scheduleAuthExpiry(ctx, until);
 		ctx.ui.notify(`Chrome control authorized for ${label}.`, "info");
 		updateChromeStatus(ctx);
