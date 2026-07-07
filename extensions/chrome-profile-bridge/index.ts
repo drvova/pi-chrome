@@ -701,6 +701,7 @@ export default function (pi: ExtensionAPI): void {
 		else globalState[PI_CHROME_AUTH_KEY] = { until: chromeAuthorizedUntil };
 	};
 	let chromeToolsRegistered = false;
+	let chromeToolsUsable = false;
 	let authExpiryTimer: NodeJS.Timeout | undefined;
 	let countdownInterval: NodeJS.Timeout | undefined;
 	// Remembered so bridge sends can tag tabs with this session's group even when ctx isn't handy.
@@ -735,15 +736,16 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	const logChromeToolChange = (
-		action: "authorized" | "revoked" | "expired",
+		action: "authorized" | "reauthorized" | "revoked" | "expired",
 		options: { label?: string; authorizedUntil?: number | "indefinite" } = {},
 	): void => {
-		const enabled = action === "authorized";
-		const content = enabled
+		const content = action === "authorized"
 			? `Chrome tools enabled by /chrome authorize${options.label ? ` (${options.label})` : ""}.`
-			: action === "expired"
-				? "Chrome tools disabled because /chrome authorize grant expired."
-				: "Chrome tools disabled by /chrome revoke.";
+			: action === "reauthorized"
+				? `Chrome tool authorization updated by /chrome authorize${options.label ? ` (${options.label})` : ""}.`
+				: action === "expired"
+					? "Chrome tools disabled because /chrome authorize grant expired."
+					: "Chrome tools disabled by /chrome revoke.";
 		pi.sendMessage({
 			customType: "pi-chrome-tool-change",
 			content,
@@ -769,8 +771,10 @@ export default function (pi: ExtensionAPI): void {
 	const lockChromeControl = (logAction?: "revoked" | "expired"): void => {
 		clearAuthExpiryTimer();
 		clearCountdownInterval();
-		const hadChromeTools = deactivateChromeTools();
-		if (logAction && hadChromeTools) logChromeToolChange(logAction, { authorizedUntil: undefined });
+		const wasUsable = chromeToolsUsable;
+		deactivateChromeTools();
+		chromeToolsUsable = false;
+		if (logAction && wasUsable) logChromeToolChange(logAction, { authorizedUntil: undefined });
 		chromeAuthorizedUntil = undefined;
 		persistAuth();
 		// Revoking control ends pi-chrome's automation for this session; tidy up the target we own.
@@ -911,8 +915,12 @@ export default function (pi: ExtensionAPI): void {
 		// Reestablish in-memory state after a /reload restored chromeAuthorizedUntil from globalThis.
 		if (chromeControlAuthorized()) {
 			activateChromeTools();
+			chromeToolsUsable = true;
 			if (typeof chromeAuthorizedUntil === "number") scheduleAuthExpiry(ctx, chromeAuthorizedUntil);
 			else if (chromeAuthorizedUntil === "indefinite") startCountdownTicker(ctx);
+		} else {
+			deactivateChromeTools();
+			chromeToolsUsable = false;
 		}
 		updateChromeStatus(ctx);
 	});
@@ -1066,10 +1074,12 @@ Usage rules:
 			ctx.ui.notify("Chrome control remains locked.", "info");
 			return;
 		}
+		const wasUsable = chromeToolsUsable;
 		chromeAuthorizedUntil = until;
 		persistAuth();
 		activateChromeTools();
-		logChromeToolChange("authorized", { label, authorizedUntil: until });
+		chromeToolsUsable = true;
+		logChromeToolChange(wasUsable ? "reauthorized" : "authorized", { label, authorizedUntil: until });
 		scheduleAuthExpiry(ctx, until);
 		ctx.ui.notify(`Chrome control authorized for ${label}.`, "info");
 		updateChromeStatus(ctx);
