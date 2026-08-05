@@ -62,16 +62,23 @@ async function hydrateAutomationTargets() {
   }
 }
 
-async function persistAutomationTargets() {
-  try {
-    const obj = {};
-    for (const [key, value] of automationTargets) {
-      obj[key] = { windowId: typeof value.windowId === "number" ? value.windowId : null, tabId: value.tabId };
+let persistPending = false;
+function persistAutomationTargets() {
+  // Debounce: multiple rapid mutations (create window + create tab + group) coalesce into one write.
+  // Without this, each step triggers a separate chrome.storage.session.set call.
+  persistPending = true;
+  Promise.resolve().then(async () => {
+    persistPending = false;
+    try {
+      const obj = {};
+      for (const [key, value] of automationTargets) {
+        obj[key] = { windowId: typeof value.windowId === "number" ? value.windowId : null, tabId: value.tabId };
+      }
+      await chrome.storage?.session?.set?.({ [AUTOMATION_STORAGE_KEY]: obj });
+    } catch {
+      // Ignore: persistence is an optimization, not a correctness requirement.
     }
-    await chrome.storage?.session?.set?.({ [AUTOMATION_STORAGE_KEY]: obj });
-  } catch {
-    // Ignore: persistence is an optimization, not a correctness requirement.
-  }
+  });
 }
 
 // True if `tabId` is a pi-chrome-owned automation tab. Pass `sessionKey` to check a specific
@@ -172,7 +179,7 @@ function withTimeout(promise, ms, label, onTimeout) {
     Promise.resolve(promise).finally(() => clearTimeout(timer)),
     new Promise((_, reject) => {
       timer = setTimeout(async () => {
-        try { await onTimeout?.(); } catch {}
+        try { await onTimeout?.(); } catch (error) { console.warn(`[pi-chrome] ${label} timeout cleanup failed:`, error?.message); }
         reject(new Error(`${label} timed out after ${ms}ms`));
       }, ms);
     }),
@@ -988,6 +995,16 @@ chrome.runtime.onStartup.addListener(() => {
   void pollLoop();
 });
 
+// Clean up all per-tab state when a tab closes. Without this, initScriptIds and attachedTabs
+// leak entries for every tab Pi ever touched, and the idle-detach alarm wastes cycles trying
+// to detach the debugger from dead tabs.
+if (chrome.tabs && chrome.tabs.onRemoved) {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    attachedTabs.delete(tabId);
+    initScriptIds.delete(tabId);
+  });
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "pi-bridge-keepalive") void pollLoop();
   else if (alarm.name === "pi-debugger-cleanup") cleanupIdleDebuggers();
@@ -1043,13 +1060,33 @@ async function handleCommand(command) {
 }
 
 async function postResult(result) {
+  const posted = await postResultRaw(result);
+  if (posted) return;
+  // 403 = bridge restarted (new token). Poll /next to get the fresh token, then retry once.
+  // Without this, a mid-flight command result is lost on every /reload.
+  try {
+    const response = await fetch(`${BRIDGE_URL}/next?name=${encodeURIComponent(CLIENT_NAME)}`, { cache: "no-store" });
+    const token = response.headers.get("x-pi-chrome-token");
+    if (token) bridgeToken = token;
+    await postResultRaw(result);
+  } catch (error) {
+    console.warn("[pi-chrome] result post failed after token refresh:", error?.message);
+  }
+}
+
+async function postResultRaw(result) {
   const headers = { "content-type": "application/json" };
   if (bridgeToken) headers["x-pi-chrome-token"] = bridgeToken;
-  await fetch(`${BRIDGE_URL}/result`, {
+  const response = await fetch(`${BRIDGE_URL}/result`, {
     method: "POST",
     headers,
     body: JSON.stringify(result),
   });
+  if (!response.ok && response.status !== 404) {
+    console.warn(`[pi-chrome] result post HTTP ${response.status}`);
+    return false;
+  }
+  return true;
 }
 
 function isVersionOlder(a, b) {
