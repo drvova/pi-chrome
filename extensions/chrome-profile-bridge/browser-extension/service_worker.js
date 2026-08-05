@@ -1398,7 +1398,19 @@ async function dispatch(action, params) {
       } finally {
         if (params.initScript) await unregisterInitScript(tab.id).catch(() => undefined);
       }
+      // Navigation destroys the page's execution context. Clear stale snapshot state
+      // so the next snapshot doesn't try to resolve uids from the old page.
+      await cdp(tab.id, "Runtime.evaluate", { expression: "delete window.__PI_CHROME_STATE__", returnByValue: true }).catch(() => undefined);
       return await formatTab(await chrome.tabs.get(updated.id));
+    }
+    case "page.reload": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      const wait = waitForTabComplete(tab.id, params.timeoutMs || 15000);
+      await chrome.tabs.reload(tab.id, { bypassCache: params.bypassCache === true });
+      await wait;
+      await cdp(tab.id, "Runtime.evaluate", { expression: "delete window.__PI_CHROME_STATE__", returnByValue: true }).catch(() => undefined);
+      return await formatTab(await chrome.tabs.get(tab.id));
     }
     case "page.screenshot":
       return takeScreenshot(params);

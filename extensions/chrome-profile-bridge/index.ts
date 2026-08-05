@@ -1595,27 +1595,31 @@ Usage rules:
 
 	pi.registerTool({
 		name: "chrome_navigate",
-		label: "Chrome Navigate",
+		label: "Chrome Navigate / Reload",
 		description:
-			"Navigate a Chrome tab to a URL via the companion extension. With no target, navigation goes to pi-chrome's own dedicated automation window/tab — it never replaces the user's active tab. Pass targetId/urlIncludes/titleIncludes only to act on a specific existing tab. Runs in the background by default; pass background=false to focus Chrome and activate the tab so the user can watch. Optionally waits for load completion.",
-		promptSnippet: "Navigate a Chrome tab in the user's existing profile.",
+			"Navigate a Chrome tab to a URL or reload the current page. With no target, navigation goes to pi-chrome's own dedicated automation window/tab. Pass action='reload' to refresh with optional bypassCache. Runs in the background by default; pass background=false to focus Chrome.",
+		promptSnippet: "Navigate or reload a Chrome tab in the user's existing profile.",
 		parameters: Type.Object({
-			url: Type.String(),
+			action: Type.Optional(StringEnum(["navigate", "reload"] as const)),
+			url: Type.Optional(Type.String({ description: "URL to navigate to (action=navigate, default)." })),
+			bypassCache: Type.Optional(Type.Boolean({ description: "If true, reload bypasses the cache (action=reload)." })),
 			targetId: Type.Optional(Type.String()),
 			urlIncludes: Type.Optional(Type.String()),
 			titleIncludes: Type.Optional(Type.String()),
 			waitUntilLoad: Type.Optional(Type.Boolean({ default: true })),
 			timeoutMs: Type.Optional(Type.Number({ default: 15_000 })),
-			initScript: Type.Optional(Type.String({ description: "Optional JavaScript source to run in MAIN world at document_start of the next navigation. Useful for seeding localStorage, stubbing Date.now(), or defining navigator.webdriver=undefined. Requires the companion extension's webNavigation permission." })),
-			background: Type.Optional(
-				Type.Boolean({ description: "If true, navigate silently without focusing Chrome. Defaults to on (the session background setting); pass false to focus Chrome so the user can watch." }),
-			),
+			initScript: Type.Optional(Type.String({ description: "Optional JavaScript source to run in MAIN world at document_start of the next navigation." })),
+			background: Type.Optional(Type.Boolean()),
 			host: Type.Optional(Type.String()),
 			port: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params, signal): Promise<ToolTextResult> {
-			const result = await authorizedBridgeSend("page.navigate", withBackground(params), (params.timeoutMs ?? 15_000) + 2_000, signal);
-			return { content: [{ type: "text", text: `Navigated to ${params.url}${params.initScript ? " (with initScript)" : ""}` }], details: { result: result as Json } };
+			if (params.action === "reload") {
+				const result = await authorizedBridgeSend("page.reload", withBackground(params), (params.timeoutMs ?? 15_000) + 2_000, signal);
+				return { content: [{ type: "text", text: `Reloaded tab (bypassCache=${params.bypassCache === true})` }], details: { result: result as Json } };
+			}
+			const result = await authorizedBridgeSend("page.navigate", withBackground({ ...params, url: params.url ?? "about:blank" }), (params.timeoutMs ?? 15_000) + 2_000, signal);
+			return { content: [{ type: "text", text: `Navigated to ${params.url ?? "about:blank"}${params.initScript ? " (with initScript)" : ""}` }], details: { result: result as Json } };
 		},
 	});
 
