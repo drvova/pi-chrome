@@ -711,6 +711,7 @@ const CHROME_TOOL_NAMES = [
 	"chrome_drag",
 	"chrome_tap",
 	"chrome_scroll",
+	"chrome_read",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -1017,8 +1018,8 @@ Capability model (important):
 
 Usage rules:
 1. If a chrome_* tool says Chrome control is locked, ask the user to run \`/chrome authorize\` before retrying.
-2. \`chrome_snapshot\` before clicking/typing; pass \`uid\` over \`selector\`.
-3. \`includeSnapshot=true\` on click/type/fill/key to verify in one round trip.
+2. `chrome_snapshot` before clicking/typing; pass `uid` over `selector`. Use `chrome_read` when you only need page text without element uids.
+3. `includeSnapshot=true` on click/type/fill/key to verify in one round trip.
 4. If \`chrome_evaluate\` returns null when you expected a value, the expression evaluated to null/undefined in the page; surface the value via \`JSON.stringify\` to confirm.
 5. \`chrome_navigate\` supports an optional \`initScript\` that runs at document_start in MAIN world for the next navigation (good for seeding localStorage or stubbing Date.now).
 6. By default chrome_* tools run in the background without focusing Chrome; pass \`background=false\` or run /chrome background off when the user wants to watch Chrome work.
@@ -1486,6 +1487,42 @@ Usage rules:
 			const snapshot = await authorizedBridgeSend(
 				"page.snapshot",
 				withBackground({ ...params, mode: params.mode || "auto", maxElements: params.maxElements ?? MAX_ELEMENTS }),
+				DEFAULT_TIMEOUT_MS,
+				signal,
+			);
+			return { content: [{ type: "text", text: formatChromeSnapshot(snapshot) }], details: { snapshot } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_read",
+		label: "Chrome Read Page",
+		description:
+			"Read rendered text content from the current page without the full Action Graph overhead of chrome_snapshot. Faster and cheaper when you only need to read what text is on the page, not interact with elements. Use chrome_snapshot when you need element uids for clicking/typing.",
+		promptSnippet: "Read current rendered page text content. Lightweight alternative to chrome_snapshot for read-only context.",
+		parameters: Type.Object({
+			query: Type.Optional(Type.String({ description: "Filter returned text to passages matching this query, e.g. 'error message' or 'price'." })),
+			maxTextChars: Type.Optional(Type.Number({ description: "Maximum characters of text to return. Default 30000." })),
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(
+				Type.Boolean({ description: "If true (the default), run silently in the background without focusing Chrome." }),
+			),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const snapshot = await authorizedBridgeSend(
+				"page.snapshot",
+				withBackground({
+					mode: "text",
+					query: params.query,
+					maxTextChars: params.maxTextChars ?? MAX_TEXT_CHARS,
+					targetId: params.targetId,
+					urlIncludes: params.urlIncludes,
+					titleIncludes: params.titleIncludes,
+				}),
 				DEFAULT_TIMEOUT_MS,
 				signal,
 			);
