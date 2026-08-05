@@ -241,6 +241,20 @@ async function attachDebugger(tabId) {
     entry.detachAt = Date.now() + INPUT_IDLE_DETACH_MS;
     return entry;
   }
+  // Serialize concurrent attach attempts for the same tab. Two commands hitting the same
+  // tab simultaneously both pass the has() check above, both try chrome.debugger.attach,
+  // and one gets "Another debugger is already attached". The pending map ensures only
+  // one attach runs at a time per tab; the second caller awaits and reuses the result.
+  const pending = attachPending.get(tabId);
+  if (pending) return pending;
+  const attachPromise = attachDebuggerInner(tabId).finally(() => attachPending.delete(tabId));
+  attachPending.set(tabId, attachPromise);
+  return attachPromise;
+}
+
+const attachPending = new Map();
+
+async function attachDebuggerInner(tabId) {
   // Before each attach, force-detach any stale CDP target this extension owns on the tab.
   // Chrome sometimes keeps a half-dead session around (extension reload mid-attach, etc.) and
   // surfaces it as "Cannot access a chrome-extension://" on the next attach attempt.
@@ -348,9 +362,7 @@ async function detachAll() {
 if (chrome.debugger && chrome.debugger.onDetach) {
   chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
     if (tabId !== undefined) attachedTabs.delete(tabId);
-    if (reason === "canceled_by_user") {
-      console.warn(`[pi-chrome] debugger canceled by user on tab ${tabId}; Chrome input will reattach on next call`);
-    }
+    console.warn(`[pi-chrome] debugger detached from tab ${tabId}: ${reason}`);
   });
 }
 
@@ -363,6 +375,20 @@ function cleanupIdleDebuggers() {
       void detachDebugger(tabId);
     }
   }
+}
+
+// Release any stuck mouse buttons and keyboard modifiers after a mid-sequence input failure.
+// If mousePressed succeeded but mouseReleased failed (or vice versa), the button stays logically
+// pressed and every subsequent mouse move becomes a drag. Same for Shift/Ctrl/Alt modifiers.
+async function releaseStuckInput(tabId) {
+  try {
+    await cdpRaw(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 0, y: 0, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse" });
+    await cdpRaw(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 0, y: 0, button: "right", buttons: 0, clickCount: 1, pointerType: "mouse" });
+    await cdpRaw(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 0, y: 0, button: "middle", buttons: 0, clickCount: 1, pointerType: "mouse" });
+    for (const code of ["ShiftLeft", "ControlLeft", "AltLeft", "MetaLeft"]) {
+      await cdpRaw(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: code.replace("Left", ""), code, windowsVirtualKeyCode: 0 });
+    }
+  } catch {}
 }
 
 function cdpRaw(tabId, method, params) {
@@ -459,6 +485,8 @@ async function cdp(tabId, method, params) {
     // and decide whether to retry manually.
     if (/Input\./.test(method)) {
       attachedTabs.delete(tabId);
+      // Release any stuck buttons/modifiers so the next action starts clean.
+      await releaseStuckInput(tabId).catch(() => undefined);
       throw new Error(
         `${method} failed: the Chrome debugger detached mid-command (the page may have navigated, DevTools was opened, or the tab crashed). ` +
         `Take a fresh chrome_snapshot and retry the action.`,
