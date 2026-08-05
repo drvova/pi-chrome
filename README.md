@@ -19,7 +19,7 @@ You:    [keeps coding — agent never asked you to log in]
 
 
 ```bash
-pi install github:drvova/pi-chrome
+pi install git:https://github.com/drvova/pi-chrome
 ```
 In Pi:
 
