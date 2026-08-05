@@ -1485,6 +1485,10 @@ async function dispatch(action, params) {
             transitions: (() => { const m = new Map(); for (const el of document.querySelectorAll("*")) { const v = getComputedStyle(el).transition; if (v && v !== "all 0s ease 0s" && v !== "none") m.set(v, (m.get(v) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([value, count]) => ({ value, count })); })(),
             mediaQueries: (() => { const mqs = new Set(); for (const sheet of document.styleSheets) { try { for (const rule of sheet.cssRules) { if (rule.media) mqs.add(rule.cssText.split("{")[0].trim()); } } catch {} } return [...mqs].slice(0, 20); })(),
             ariaIssues: (() => { const issues = []; for (const el of document.querySelectorAll("[role],button,a,input,select,textarea,img,svg,[aria-label],[aria-labelledby],[aria-describedby]")) { const s = getComputedStyle(el); if (s.display === "none" || s.visibility === "hidden" || el.getAttribute("aria-hidden") === "true") continue; const tag = el.tagName; const role = el.getAttribute("role"); if (tag === "IMG" && !el.alt && !el.getAttribute("aria-label")) issues.push({ tag, role, issue: "missing alt text" }); if (tag === "BUTTON" && !el.textContent?.trim() && !el.getAttribute("aria-label") && !el.getAttribute("aria-labelledby")) issues.push({ tag, role, issue: "button with no accessible name" }); if (tag === "A" && !el.textContent?.trim() && !el.getAttribute("aria-label") && el.querySelector("img") && !el.querySelector("img")?.alt) issues.push({ tag, role, issue: "link with image but no text/alt" }); if (el.getAttribute("aria-label") === "") issues.push({ tag, id: el.id, role, issue: "empty aria-label" }); if (role === "checkbox" || role === "radio" || role === "switch") { if (!el.getAttribute("aria-checked")) issues.push({ tag, id: el.id, role, issue: "missing aria-checked" }); } } return issues.slice(0, 30); })(),
+            tapTargets: (() => { const targets = []; for (const el of document.querySelectorAll("button,a[href],input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[tabindex]")) { const s = getComputedStyle(el); if (s.display === "none" || s.visibility === "hidden" || s.pointerEvents === "none") continue; const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue; const minSize = 44; const tooSmall = r.width < minSize || r.height < minSize; targets.push({ tag: el.tagName, type: el.type || undefined, text: (el.textContent || "").trim().slice(0, 30) || el.getAttribute("aria-label") || "", width: Math.round(r.width), height: Math.round(r.height), tooSmall, suggestion: tooSmall ? `expand to at least ${minSize}x${minSize}px` : undefined }); } return targets.filter(t => t.tooSmall).slice(0, 20); })(),
+            gradients: (() => { const m = new Map(); for (const el of document.querySelectorAll("*")) { const s = getComputedStyle(el); for (const p of ["backgroundImage","background"]) { const v = s.getPropertyValue(p); if (v && v.includes("gradient")) { const g = v.match(/(linear|radial|conic)-gradient\([^)]+\)/g); if (g) for (const grad of g) m.set(grad, (m.get(grad) || 0) + 1); } } } return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([value, count]) => ({ value, count })); })(),
+            fontWeights: (() => { const m = new Map(); for (const el of document.querySelectorAll("*")) { const w = getComputedStyle(el).fontWeight; if (w && w !== "400" && w !== "normal") m.set(w, (m.get(w) || 0) + 1); } m.set("400", (m.get("400") || 0) + 1); return [...m.entries()].sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([weight, count]) => ({ weight, count })); })(),
+            focusOrder: (() => { const focusable = document.querySelectorAll("a[href],button,input,select,textarea,[tabindex]:not([tabindex=\"-1\"]),[contenteditable]"); return [...focusable].filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" && !el.disabled; }).slice(0, 40).map((el, i) => ({ order: i + 1, tag: el.tagName, text: (el.textContent || "").trim().slice(0, 30) || el.getAttribute("aria-label") || el.placeholder || "", type: el.type || undefined, tabindex: el.tabIndex > 0 ? el.tabIndex : undefined })); })(),
           };
         },
       }, `design audit in tab ${tab.id}`);
@@ -1503,6 +1507,10 @@ async function dispatch(action, params) {
       if (audit.imageCount) { lines.push(`\n## Images: ${audit.imageCount} total`); for (const src of (audit.images || []).slice(0, 5)) lines.push(`  ${src.slice(0, 80)}`); }
       lines.push(`\n## Contrast: ${audit.contrastIssues} potential issues (below 4.5:1) out of ~${Math.min(200, audit.totalElements)} checked`);
       if (audit.ariaIssues?.length) { lines.push(`\n## ARIA issues (${audit.ariaIssues.length})`); for (const a of audit.ariaIssues.slice(0, 15)) lines.push(`  ${a.tag}${a.id ? `#${a.id}` : ""} ${a.role ? `[role=${a.role}]` : ""} — ${a.issue}`); }
+      if (audit.tapTargets?.length) { lines.push(`\n## Tap target issues (${audit.tapTargets.length} below 44x44px)`); for (const t of audit.tapTargets) lines.push(`  ${t.tag} ${t.text} — ${t.width}x${t.height}px ${t.suggestion}`); }
+      if (audit.gradients?.length) { lines.push("\n## Gradients"); for (const g of audit.gradients) lines.push(`  ${g.value.slice(0, 80)} (${g.count} uses)`); }
+      if (audit.fontWeights?.length) { lines.push("\n## Font weights"); for (const w of audit.fontWeights) lines.push(`  ${w.weight} (${w.count} elements)`); }
+      if (audit.focusOrder?.length) { lines.push("\n## Focus / tab order"); for (const f of audit.focusOrder.slice(0, 20)) lines.push(`  ${f.order}. ${f.tag}${f.type ? `[${f.type}]` : ""} ${f.text}${f.tabindex ? ` (tabindex=${f.tabindex})` : ""}`); }
       if (audit.headings?.length) { lines.push("\n## Heading outline"); for (const h of audit.headings) lines.push(`  ${"  ".repeat(h.level - 1)}h${h.level}: ${h.text}`); }
       if (audit.forms?.length) { lines.push("\n## Forms"); for (const f of audit.forms) { lines.push(`  ${f.tag} ${f.label || f.placeholder || f.type || ""} ${f.required ? "(required)" : ""} ${f.invalid ? "[invalid]" : ""}`); } }
       if (audit.links?.length) { lines.push(`\n## Links (${audit.links.length} total)`); for (const l of audit.links.slice(0, 20)) lines.push(`  ${l.text.slice(0, 40)} → ${l.href.slice(0, 60)}`); }
@@ -1596,6 +1604,23 @@ async function dispatch(action, params) {
       await cdp(tab.id, "Emulation.clearTimezoneOverride", {}).catch(() => undefined);
       await cdp(tab.id, "Emulation.setCPUThrottlingRate", { rate: 1 }).catch(() => undefined);
       return { cleared: true, tabId: tab.id };
+    }
+    case "emulate.colorblind": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      // CDP Emulation.setDOMMutationObserver or CSS filter approach. We use the simpler
+      // approach: inject a CSS filter on the document element via Runtime.evaluate.
+      const filters = {
+        protanopia: "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='p'><feColorMatrix type='matrix' values='0.567,0.433,0,0,0 0.558,0.442,0,0,0 0,0.242,0.758,0,0 0,0,0,1,0'/></filter></svg>#p\")",
+        deuteranopia: "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='d'><feColorMatrix type='matrix' values='0.625,0.375,0,0,0 0.7,0.3,0,0,0 0,0.3,0.7,0,0 0,0,0,1,0'/></filter></svg>#d\")",
+        tritanopia: "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='t'><feColorMatrix type='matrix' values='0.95,0.05,0,0,0 0,0.433,0.567,0,0 0,0.475,0.525,0,0 0,0,0,1,0'/></filter></svg>#t\")",
+        achromatopsia: "grayscale(100%)",
+        "high-contrast": "contrast(150%) saturate(0)",
+        none: "none",
+      };
+      const filter = filters[params.type] || filters.none;
+      await cdp(tab.id, "Runtime.evaluate", { expression: `document.documentElement.style.filter = ${JSON.stringify(filter)}`, returnByValue: true });
+      return { emulated: "colorblind", type: params.type, filter: filter.slice(0, 60), tabId: tab.id };
     }
     // === Network domain (CDP) — no new permissions needed ===
     case "network.userAgent": {

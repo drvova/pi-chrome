@@ -2066,8 +2066,9 @@ Usage rules:
 			"Emulate a mobile device or preset, set geolocation, override timezone, or throttle CPU. Presets: iphone-15, iphone-se, ipad, pixel-8, galaxy-s24, desktop-1080, desktop-1440. Or pass action='device' with custom width/height. Pass action='clear' to reset.",
 		promptSnippet: "Emulate mobile/desktop viewport, geolocation, timezone, or CPU throttle. Presets available.",
 		parameters: Type.Object({
-			action: StringEnum(["device", "preset", "geolocation", "timezone", "cpu", "clear"]),
+			action: StringEnum(["device", "preset", "geolocation", "timezone", "cpu", "colorblind", "clear"]),
 			preset: Type.Optional(StringEnum(["iphone-15", "iphone-se", "ipad", "pixel-8", "galaxy-s24", "desktop-1080", "desktop-1440"] as const)),
+			type: Type.Optional(StringEnum(["protanopia", "deuteranopia", "tritanopia", "achromatopsia", "high-contrast", "none"] as const)),
 			width: Type.Optional(Type.Number({ description: "Viewport width (device action)." })),
 			height: Type.Optional(Type.Number({ description: "Viewport height (device action)." })),
 			deviceScaleFactor: Type.Optional(Type.Number({ description: "Device pixel ratio (device action)." })),
@@ -2101,7 +2102,7 @@ Usage rules:
 				const result = await authorizedBridgeSend("emulate.device", withBackground({ ...preset, targetId: params.targetId, urlIncludes: params.urlIncludes, titleIncludes: params.titleIncludes }), DEFAULT_TIMEOUT_MS, signal);
 				return { content: [{ type: "text", text: `Emulated ${params.preset ?? "iphone-15"}: ${preset.width}x${preset.height} @ ${preset.deviceScaleFactor}x dpr${preset.mobile ? " (mobile)" : ""}` }], details: { result } };
 			}
-			const actions: Record<string, string> = { device: "emulate.device", geolocation: "emulate.geolocation", timezone: "emulate.timezone", cpu: "emulate.cpu", clear: "emulate.clear" };
+			const actions: Record<string, string> = { device: "emulate.device", preset: "emulate.device", geolocation: "emulate.geolocation", timezone: "emulate.timezone", cpu: "emulate.cpu", colorblind: "emulate.colorblind", clear: "emulate.clear" };
 			const result = await authorizedBridgeSend(actions[params.action] ?? "emulate.device", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
 			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
 		},
