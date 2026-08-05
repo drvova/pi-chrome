@@ -3,6 +3,7 @@
   "name": "Pi Chrome Connector",
   "version": "0.15.46",
   "description": "Lets Pi control tabs in Chrome via a local connector at 127.0.0.1.",
+  "minimum_chrome_version": "102",
   "permissions": [
     "tabs",
     "tabGroups",

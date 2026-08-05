@@ -9,6 +9,7 @@ const CDP_COMMAND_TIMEOUT_MS = 5_000;
 const SCRIPTING_TIMEOUT_MS = 8_000;
 const ATTACH_TIMEOUT_MS = 3_000;
 let polling = false;
+let bridgeToken = null;
 
 // =================== pi-chrome automation target ownership ===================
 // pi-chrome must never hijack the user's active tab. When a page/navigation action runs without
@@ -346,14 +347,16 @@ if (chrome.debugger && chrome.debugger.onDetach) {
   });
 }
 
-setInterval(() => {
+// Idle-detach: clean up debugger sessions past their detachAt. Runs as a chrome.alarm (MV3-safe)
+// since setInterval dies when the worker suspends. See armKeepaliveAlarm for registration.
+function cleanupIdleDebuggers() {
   const now = Date.now();
   for (const [tabId, entry] of attachedTabs) {
     if (entry.detachAt && entry.detachAt < now) {
       void detachDebugger(tabId);
     }
   }
-}, 5000);
+}
 
 function cdpRaw(tabId, method, params) {
   const debuggee = attachedTabs.get(tabId)?.debuggee || { tabId };
@@ -970,6 +973,7 @@ async function chromeInputUpload(params) {
 
 function armKeepaliveAlarm() {
   chrome.alarms.create("pi-bridge-keepalive", { periodInMinutes: 0.5 });
+  chrome.alarms.create("pi-debugger-cleanup", { periodInMinutes: 0.5 });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -986,6 +990,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "pi-bridge-keepalive") void pollLoop();
+  else if (alarm.name === "pi-debugger-cleanup") cleanupIdleDebuggers();
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -994,11 +999,6 @@ chrome.action.onClicked.addListener(() => {
 });
 
 armKeepaliveAlarm();
-
-setInterval(() => {
-  void pollLoop();
-}, 1000);
-
 async function pollLoop() {
   if (polling) return;
   polling = true;
@@ -1015,10 +1015,13 @@ async function pollLoop() {
         try { chrome.runtime.reload(); } catch {}
         return;
       }
+      const token = response.headers.get("x-pi-chrome-token");
+      if (token) bridgeToken = token;
       const payload = await response.json();
       if (payload.type === "command") await handleCommand(payload.command);
     }
   } catch (error) {
+    console.warn("[pi-chrome] poll loop error:", error?.message);
     await sleep(POLL_ERROR_BACKOFF_MS);
   } finally {
     polling = false;
@@ -1040,9 +1043,11 @@ async function handleCommand(command) {
 }
 
 async function postResult(result) {
+  const headers = { "content-type": "application/json" };
+  if (bridgeToken) headers["x-pi-chrome-token"] = bridgeToken;
   await fetch(`${BRIDGE_URL}/result`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(result),
   });
 }

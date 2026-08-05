@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join, resolve } from "node:path";
-
+import { randomUUID } from "node:crypto";
 /**
  * Existing-profile Chrome bridge for pi.
  *
@@ -270,8 +270,8 @@ function corsHeadersFor(request: IncomingMessage): Record<string, string> {
 	return {
 		"access-control-allow-origin": origin,
 		"access-control-allow-methods": "GET,POST,OPTIONS",
-		"access-control-allow-headers": "content-type",
-		"access-control-expose-headers": "x-pi-chrome-version",
+		"access-control-allow-headers": "content-type,x-pi-chrome-token",
+		"access-control-expose-headers": "x-pi-chrome-version,x-pi-chrome-token",
 		"vary": "origin",
 	};
 }
@@ -304,6 +304,7 @@ class ChromeProfileBridge {
 	private lastSeenAt: number | undefined;
 	private clientName: string | undefined;
 	private mode: "server" | "client" | undefined;
+	private readonly bridgeToken = randomUUID();
 
 	constructor(
 		private readonly host: string,
@@ -589,13 +590,18 @@ class ChromeProfileBridge {
 				command
 					? { type: "command", command, expectedExtensionVersion: currentVersion }
 					: { type: "none", expectedExtensionVersion: currentVersion },
-				{ ...corsHeaders, "x-pi-chrome-version": currentVersion },
+				{ ...corsHeaders, "x-pi-chrome-version": currentVersion, "x-pi-chrome-token": this.bridgeToken },
 			);
 			return;
 		}
 		if (request.method === "POST" && url.pathname === "/result") {
 			if (!isBrowserOriginAllowed(request)) {
 				sendJson(response, 403, { ok: false, error: "browser origin not allowed" });
+				return;
+			}
+			const bridgeTokenHeader = String(request.headers["x-pi-chrome-token"] ?? "");
+			if (bridgeTokenHeader !== this.bridgeToken) {
+				sendJson(response, 403, { ok: false, error: "invalid or missing bridge token; reload 'Pi Chrome Connector' at chrome://extensions" }, corsHeaders);
 				return;
 			}
 			this.lastSeenAt = Date.now();
