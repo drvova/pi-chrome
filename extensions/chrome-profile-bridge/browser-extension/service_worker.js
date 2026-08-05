@@ -902,51 +902,100 @@ async function chromeInputFill(params) {
 async function chromeInputScroll(params) {
   const tab = await getTabByParams(params);
   if (params.foreground) await bringToFront(tab);
-  await attachDebugger(tab.id);
-  const resolved = (params.selector || params.uid) ? await resolveTargetInTab(tab.id, params) : { x: 100, y: 100, rect: null };
-  const x = resolved.rect ? resolved.rect.left + Math.min(resolved.rect.width, 800) / 2 : resolved.x;
-  const y = resolved.rect ? resolved.rect.top + Math.min(resolved.rect.height, 600) / 2 : resolved.y;
+
+  // scrollIntoView: skip the wheel-event simulation entirely and just call
+  // el.scrollIntoView({ block: 'center' }). Works even when CDP is flaky.
+  if ((params.selector || params.uid) && params.scrollIntoView !== false) {
+    try {
+      await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: "MAIN",
+        func: (sel, uid) => {
+          const state = window.__PI_CHROME_STATE__;
+          const el = uid && state && state.elements && state.elements[uid] ? state.elements[uid] : (sel ? document.querySelector(sel) : null);
+          if (el) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        },
+        args: [params.selector ?? null, params.uid ?? null],
+      }, `scrollIntoView in tab ${tab.id}`);
+    } catch {}
+  }
+
   const totalY = params.deltaY || 0, totalX = params.deltaX || 0;
-  // Profile mimics a trackpad flick: short ramp-up (~15% of events), then geometric decay
-  // with a ~12% drop per event. Gives momentum tail tests something to find, and the small
-  // tail deltas (a handful of <20px events) put IntersectionObserver thresholds in range.
-  const peak = Math.max(Math.abs(totalY), Math.abs(totalX));
-  // Aim peak event ~22px so cumulative wheel approach to target seeds low-ratio IO samples.
-  const PEAK_TARGET = 22;
-  const w = [];
-  // Build weights for an arbitrary n, then iterate to find an n where peak * (w_peak/sum) <= PEAK_TARGET.
-  function build(n) {
-    const arr = [];
-    const peakIdx = Math.max(1, Math.floor(n * 0.15));
-    for (let i = 0; i < n; i++) {
-      if (i <= peakIdx) arr.push(0.5 + 0.5 * (i / peakIdx)); // 0.5 → 1.0
-      else arr.push(Math.pow(0.88, i - peakIdx));            // ~12% drop per step
-    }
-    return arr;
+  if (totalY === 0 && totalX === 0) {
+    return { input: "chrome", deltaY: 0, deltaX: 0, steps: 0 };
   }
-  let n = Math.max(12, params.steps || 24);
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const arr = build(n);
-    const s = arr.reduce((a, b) => a + b, 0);
-    const peakStep = peak * (Math.max(...arr) / s);
-    if (peakStep <= PEAK_TARGET || n >= 240) {
-      w.length = 0;
-      w.push(...arr);
-      break;
+
+  // Cap the number of wheel events so large scrolls don't timeout.
+  const MAX_WHEEL_EVENTS = 40;
+  try {
+    await attachDebugger(tab.id);
+    const resolved = (params.selector || params.uid) ? await resolveTargetInTab(tab.id, params) : { x: 100, y: 100, rect: null };
+    const x = resolved.rect ? resolved.rect.left + Math.min(resolved.rect.width, 800) / 2 : resolved.x;
+    const y = resolved.rect ? resolved.rect.top + Math.min(resolved.rect.height, 600) / 2 : resolved.y;
+
+    const peak = Math.max(Math.abs(totalY), Math.abs(totalX), 1);
+    const PEAK_TARGET = 22;
+    const w = [];
+    function build(n) {
+      const arr = [];
+      const peakIdx = Math.max(1, Math.floor(n * 0.15));
+      for (let i = 0; i < n; i++) {
+        if (i <= peakIdx) arr.push(0.5 + 0.5 * (i / peakIdx));
+        else arr.push(Math.pow(0.88, i - peakIdx));
+      }
+      return arr;
     }
-    n = Math.ceil(n * 1.4);
-  }
-  if (w.length === 0) w.push(...build(n));
-  const sumW = w.reduce((a, b) => a + b, 0);
-  for (let i = 0; i < n; i++) {
-    const dy = totalY * (w[i] / sumW), dx = totalX * (w[i] / sumW);
-    await cdp(tab.id, "Input.dispatchMouseEvent", {
-      type: "mouseWheel", x, y, deltaX: dx, deltaY: dy, pointerType: "mouse",
+    let n = Math.max(12, params.steps || 24);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const arr = build(n);
+      const s = arr.reduce((a, b) => a + b, 0);
+      const peakStep = peak * (Math.max(...arr) / s);
+      if (peakStep <= PEAK_TARGET || n >= MAX_WHEEL_EVENTS) {
+        w.length = 0;
+        w.push(...arr);
+        break;
+      }
+      n = Math.ceil(n * 1.4);
+    }
+    if (w.length === 0) w.push(...build(n));
+
+    const eventsToFire = Math.min(n, MAX_WHEEL_EVENTS);
+    const sumW = w.reduce((a, b) => a + b, 0);
+    let wheelY = 0, wheelX = 0;
+    for (let i = 0; i < eventsToFire; i++) {
+      const dy = totalY * (w[i] / sumW), dx = totalX * (w[i] / sumW);
+      wheelY += dy; wheelX += dx;
+      await cdp(tab.id, "Input.dispatchMouseEvent", {
+        type: "mouseWheel", x, y, deltaX: dx, deltaY: dy, pointerType: "mouse",
+      }).catch(() => undefined);
+      await sleep(rng(22, 48));
+    }
+
+    // Cover any remaining distance via direct scrollBy so the final position is exact.
+    const remainingY = Math.round(totalY - wheelY);
+    const remainingX = Math.round(totalX - wheelX);
+    if (Math.abs(remainingY) > 1 || Math.abs(remainingX) > 1) {
+      await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: "MAIN",
+        func: (dy, dx) => window.scrollBy(dx, dy),
+        args: [remainingY, remainingX],
+      }, `scrollBy remainder in tab ${tab.id}`).catch(() => undefined);
+    }
+
+    return { input: "chrome", deltaY: totalY, deltaX: totalX, wheelEvents: eventsToFire, remainderApplied: { y: remainingY, x: remainingX } };
+  } catch (error) {
+    // DOM fallback: if the debugger is flaky or detached, use window.scrollBy directly.
+    await executeScriptTimed({
+      target: { tabId: tab.id, frameIds: [0] },
+      world: "MAIN",
+      func: (dy, dx) => window.scrollBy(dx, dy),
+      args: [totalY, totalX],
+    }, `DOM fallback scroll in tab ${tab.id}`).catch(() => {
+      throw new Error(`Chrome scroll failed via both CDP and DOM: ${error?.message}`);
     });
-    // Sleep one+ frame so IntersectionObserver / rAF samples can run between events.
-    await sleep(rng(22, 48));
+    return { input: "dom-fallback", deltaY: totalY, deltaX: totalX, reason: error?.message };
   }
-  return { input: "chrome", deltaX: totalX, deltaY: totalY, steps: n };
 }
 
 async function chromeInputTap(params) {
