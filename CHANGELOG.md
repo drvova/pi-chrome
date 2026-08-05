@@ -2,6 +2,18 @@
 
 All notable user-facing changes to `pi-chrome`.
 
+## 0.16.0 — 2026-08-05
+
+- **11 new tools (30 total).** `chrome_emulate` (device, geolocation, timezone, CPU throttle), `chrome_cookies` (get/set/remove across all domains), `chrome_network` (user-agent override, clear cache/cookies), `chrome_identity` (Google OAuth2 token), `chrome_downloads` (download files, list downloads), `chrome_history` (search/delete browsing history), `chrome_sessions` (recently closed tabs/windows), `chrome_status` (self-diagnose bridge health without `/chrome authorize`), `chrome_read` (lightweight page text without Action Graph), `chrome_find` (natural-language element search).
+- **WSL2 support.** Auto-detects WSL2 via `/proc/version`, binds `0.0.0.0` for Windows localhost forwarding, converts paths via `wslpath`, opens Chrome/Explorer via `cmd.exe`, and provides WSL2 diagnostics in `/chrome doctor`.
+- **Bridge token authentication.** Loopback bridge now generates a per-process random token. Companion extension stores it from the first `/next` response and includes it on every `/result` post. Blocks forged requests that bypass the origin check.
+- **Fixed `/reload` port-binding race.** `bridge.stop()` now calls `closeAllConnections()` before `close()` to immediately release the port. `bindServerOrClient()` retries EADDRINUSE up to 5 times with backoff. No more needing to manually reload the Chrome extension after `/reload`.
+- **5 race conditions and resource leaks fixed.** Token refresh on 403 during result post, `response.ok` checking on `postResult`, per-tab cleanup on `chrome.tabs.onRemoved` (prevents `attachedTabs`/`initScriptIds` leaks), `withTimeout` error logging, `persistAutomationTargets` debounce.
+- **MV3 lifecycle hardening.** Removed redundant `setInterval` polling (fights the service worker lifecycle), replaced debugger idle-detach `setInterval` with `chrome.alarms`, added `minimum_chrome_version: 102`, pollLoop errors now logged.
+- **System prompt updated.** Agent is now aware of all 30 tools and their capabilities.
+- **New manifest permissions.** `cookies`, `identity`, `downloads`, `history`, `sessions`. Reload the extension at `chrome://extensions` after updating to pick up the new permissions.
+
+
 ## 0.15.40 — 2026-06-22
 
 - **Automation targets reuse the session tab group.** When `chrome_navigate` / implicit page actions create a new pi-chrome automation tab, it is now created in this session's existing tab-group window when possible and joins that same group, avoiding duplicate same-title `Pi Session: ...` groups.

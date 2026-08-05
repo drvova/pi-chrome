@@ -1035,6 +1035,12 @@ Usage rules:
 6. By default chrome_* tools run in the background without focusing Chrome; pass \`background=false\` or run /chrome background off when the user wants to watch Chrome work.
 7. If you hit a native file-picker or privileged browser prompt gate, tell the user; generic clicks/typing/CSP gates are handled by Chrome input.
 8. Run /chrome doctor when in doubt about connectivity or capabilities.
+9. \`chrome_emulate\` can override viewport (mobile), geolocation, timezone, and CPU throttle — pass action:'clear' to reset.
+10. \`chrome_cookies\` can get/set/remove cookies across all domains, not just the current tab.
+11. \`chrome_network\` can override user-agent, clear cache, or clear cookies for the current tab.
+12. \`chrome_downloads\`, \`chrome_history\`, and \`chrome_sessions\` access browser-wide state.
+13. \`chrome_identity\` gets a Google OAuth2 token for API access.
+14. \`chrome_status\` checks bridge health without needing \`/chrome authorize\`.
 </chrome-profile-bridge>`;
 		return { systemPrompt: event.systemPrompt + primer };
 	});
@@ -2192,7 +2198,7 @@ Usage rules:
 			const parts: string[] = [`pi-chrome v${PI_CHROME_VERSION}`, `Role: ${roleLabel}`, `Auth: ${authSummary()}`, `Background: ${backgroundDefault ? "on" : "off"}`];
 			try {
 				const started = Date.now();
-				const version = (await authorizedBridgeSend("tab.version", {}, 10_000, signal)) as { extensionVersion?: string };
+			const version = (await bridge.send("tab.version", {}, 10_000, signal)) as { extensionVersion?: string };
 				const latencyMs = Date.now() - started;
 				parts.push(`Extension: v${version.extensionVersion ?? "?"} (${latencyMs}ms)`);
 				parts.push(`Connected: yes`);
