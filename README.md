@@ -71,8 +71,14 @@ Second doctor run should show all checks passing.
 - Capture screenshots for bugs, PRs, and demos.
 - Inspect console logs and captured `fetch`/`XMLHttpRequest` responses.
 - Manage tabs without taking over your active window.
+- Emulate mobile devices, override geolocation/timezone, throttle CPU.
+- Get/set/remove cookies across all domains.
+- Override user-agent, clear cache and cookies.
+- Download files, search browsing history, list recently closed tabs.
+- Get Google OAuth2 tokens for API access.
+- Works on macOS, Linux, and WSL2 (auto-detects and binds for Windows localhost forwarding).
 
-Tool parameters and gotchas are documented inline in Pi.
+30 tools total. Tool parameters and gotchas are documented inline in Pi.
 
 ---
 

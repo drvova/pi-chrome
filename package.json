@@ -53,6 +53,7 @@
 	"files": [
 		"extensions",
 		"docs",
+		"skills",
 		"test-suite",
 		"README.md",
 		"CHANGELOG.md",
@@ -63,6 +64,9 @@
 	"pi": {
 		"extensions": [
 			"./extensions/chrome-profile-bridge/index.ts"
+		],
+		"skills": [
+			"./skills/pi-chrome"
 		]
 	},
 	"peerDependencies": {
