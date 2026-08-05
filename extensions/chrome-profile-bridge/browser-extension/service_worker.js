@@ -2038,6 +2038,94 @@ async function dispatch(action, params) {
       }
       return { text: lines.join("\n"), css };
     }
+    case "page.diff": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      // Take before screenshot, inject CSS change, take after screenshot, return both data URLs
+      const before = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      const css = params.css || "";
+      if (css) {
+        await executeScriptTimed({
+          target: { tabId: tab.id, frameIds: [0] }, world: "MAIN",
+          func: (css) => { const s = document.createElement("style"); s.id = "__pi_chrome_diff"; s.textContent = css; document.head.appendChild(s); return true; },
+          args: [css],
+        }, `inject diff CSS in tab ${tab.id}`);
+        await sleep(200);
+      }
+      const after = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      // Remove injected style
+      if (css) {
+        await executeScriptTimed({
+          target: { tabId: tab.id, frameIds: [0] }, world: "MAIN",
+          func: () => { document.getElementById("__pi_chrome_diff")?.remove(); return true; },
+          args: [],
+        }, `remove diff CSS in tab ${tab.id}`);
+      }
+      return { before, after, tab: await formatTab(tab) };
+    }
+    case "page.stylesheet": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      const results = await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] }, world: "MAIN",
+        func: () => {
+          const sheets = [];
+          for (const sheet of document.styleSheets) {
+            let rules = []; let ruleCount = 0; let size = 0;
+            try {
+              ruleCount = sheet.cssRules.length;
+              for (const rule of sheet.cssRules) { size += (rule.cssText || "").length; ruleCount++; }
+              if (params_filter) rules = [...sheet.cssRules].filter(r => r.selectorText && params_filter.test(r.selectorText)).map(r => r.cssText.slice(0, 200));
+            } catch { rules = []; }
+            sheets.push({ href: sheet.href || "(inline)", ruleCount, sizeKB: Math.round(size / 1024), disabled: sheet.disabled, crossOrigin: sheet.href ? (() => { try { return new URL(sheet.href).origin !== location.origin; } catch { return false; } })() : false });
+          }
+          return sheets;
+        },
+      }, `extract stylesheets in tab ${tab.id}`);
+      const sheets = results[0]?.result || [];
+      const lines = ["# Stylesheets", `Total: ${sheets.length} sheets`];
+      for (const s of sheets) lines.push(`  ${s.href} — ${s.ruleCount} rules, ~${s.sizeKB}KB${s.crossOrigin ? " (cross-origin)" : ""}${s.disabled ? " [disabled]" : ""}`);
+      return { text: lines.join("\n"), sheets };
+    }
+    case "page.a11y": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      const results = await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] }, world: "MAIN",
+        func: () => {
+          const tree = [];
+          const walk = (el, depth) => {
+            const s = getComputedStyle(el);
+            if (s.display === "none" || s.visibility === "hidden" || el.getAttribute("aria-hidden") === "true") return;
+            const role = el.getAttribute("role");
+            const name = el.getAttribute("aria-label") || el.labels?.[0]?.textContent?.trim().slice(0, 30) || (el.textContent || "").trim().slice(0, 30) || el.alt || el.title || "";
+            const tag = el.tagName.toLowerCase();
+            const isInteractive = /^(a|button|input|select|textarea|summary|details)$/.test(tag) || role === "button" || role === "link" || el.tabIndex >= 0;
+            const isHeading = /^h[1-6]$/.test(tag);
+            const isLandmark = /^(header|nav|main|footer|aside|section|article|form)$/.test(tag);
+            if (isInteractive || isHeading || isLandmark || role) {
+              tree.push({ depth, tag, role: role || undefined, name: name || undefined, headingLevel: isHeading ? parseInt(tag[1]) : undefined, isLandmark, isInteractive, tabindex: el.tabIndex > 0 ? el.tabIndex : undefined });
+            }
+            for (const c of el.children) walk(c, depth + 1);
+          };
+          walk(document.body, 0);
+          return tree.slice(0, 100);
+        },
+      }, `extract a11y tree in tab ${tab.id}`);
+      const tree = results[0]?.result || [];
+      const lines = ["# Accessibility tree"];
+      for (const n of tree) {
+        const indent = "  ".repeat(n.depth);
+        let label = n.tag;
+        if (n.role) label += ` [role=${n.role}]`;
+        if (n.headingLevel) label += ` (h${n.headingLevel})`;
+        if (n.isLandmark) label += ` (landmark)`;
+        if (n.name) label += ` "${n.name}"`;
+        if (n.tabindex) label += ` (tabindex=${n.tabindex})`;
+        lines.push(`${indent}${label}`);
+      }
+      return { text: lines.join("\n"), tree };
+    }
     case "page.screenshot":
       return takeScreenshot(params);
     case "automation.status": {

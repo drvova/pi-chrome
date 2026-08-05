@@ -724,6 +724,9 @@ const CHROME_TOOL_NAMES = [
 	"chrome_status",
 	"chrome_audit",
 	"chrome_inspect_css",
+	"chrome_diff",
+	"chrome_stylesheets",
+	"chrome_a11y_tree",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -2307,6 +2310,69 @@ Usage rules:
 			const result = await authorizedBridgeSend("page.css", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
 			const css = result as { text?: string; css?: unknown };
 			return { content: [{ type: "text", text: css.text ?? safeJson(result) }], details: { css: css.css } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_diff",
+		label: "Chrome Visual Diff",
+		description:
+			"Take a before screenshot, inject CSS changes, take an after screenshot, and return both. Visual diff for testing CSS changes without modifying the actual page. The injected style is removed after capture.",
+		promptSnippet: "Before/after visual diff for testing CSS changes in Chrome.",
+		parameters: Type.Object({
+			css: Type.Optional(Type.String({ description: "CSS to inject for the diff." })),
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("page.diff", withBackground(params), 30_000, signal);
+			return { content: [{ type: "text", text: `Visual diff captured (before + after)` }], details: { result: result as Json } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_stylesheets",
+		label: "Chrome Stylesheet Inventory",
+		description:
+			"List all stylesheets loaded on the page with rule counts, estimated sizes, cross-origin status, and disabled state. Useful for CSS architecture audit and identifying bloated or unused stylesheets.",
+		promptSnippet: "List all CSS stylesheets with rule counts and sizes.",
+		parameters: Type.Object({
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("page.stylesheet", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			const res = result as { text?: string; sheets?: unknown };
+			return { content: [{ type: "text", text: res.text ?? safeJson(result) }], details: { sheets: res.sheets } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_a11y_tree",
+		label: "Chrome Accessibility Tree",
+		description:
+			"Extract the accessibility tree: landmarks, headings, interactive elements, ARIA roles, and names. Like DevTools Accessibility tab but as structured text. Essential for screen reader navigation audit.",
+		promptSnippet: "Extract Chrome accessibility tree with landmarks, headings, and interactive elements.",
+		parameters: Type.Object({
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("page.a11y", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			const res = result as { text?: string; tree?: unknown };
+			return { content: [{ type: "text", text: res.text ?? safeJson(result) }], details: { tree: res.tree } };
 		},
 	});
 
