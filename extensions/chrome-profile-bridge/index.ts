@@ -1018,8 +1018,8 @@ Capability model (important):
 
 Usage rules:
 1. If a chrome_* tool says Chrome control is locked, ask the user to run \`/chrome authorize\` before retrying.
-2. `chrome_snapshot` before clicking/typing; pass `uid` over `selector`. Use `chrome_read` when you only need page text without element uids.
-3. `includeSnapshot=true` on click/type/fill/key to verify in one round trip.
+2. \`chrome_snapshot\` before clicking/typing; pass \`uid\` over \`selector\`. Use \`chrome_read\` when you only need page text without element uids.
+3. \`includeSnapshot=true\` on click/type/fill/key to verify in one round trip.
 4. If \`chrome_evaluate\` returns null when you expected a value, the expression evaluated to null/undefined in the page; surface the value via \`JSON.stringify\` to confirm.
 5. \`chrome_navigate\` supports an optional \`initScript\` that runs at document_start in MAIN world for the next navigation (good for seeding localStorage or stubbing Date.now).
 6. By default chrome_* tools run in the background without focusing Chrome; pass \`background=false\` or run /chrome background off when the user wants to watch Chrome work.
