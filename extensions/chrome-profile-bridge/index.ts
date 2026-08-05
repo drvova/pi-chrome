@@ -714,6 +714,10 @@ const CHROME_TOOL_NAMES = [
 	"chrome_tap",
 	"chrome_scroll",
 	"chrome_read",
+	"chrome_emulate",
+	"chrome_cookies",
+	"chrome_network",
+	"chrome_identity",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -2002,6 +2006,106 @@ Usage rules:
 		async execute(_id, params, signal): Promise<ToolTextResult> {
 			const result = await authorizedBridgeSend("page.scroll", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
 			return { content: [{ type: "text", text: `Scrolled dy=${params.deltaY ?? 0} dx=${params.deltaX ?? 0}` }], details: { result: result as Json } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_emulate",
+		label: "Chrome Emulate Device",
+		description:
+			"Emulate a mobile device, set geolocation, override timezone, or throttle CPU for the current tab. Uses CDP Emulation domain — no new permissions needed. Pass action: 'clear' to reset all overrides.",
+		promptSnippet: "Emulate mobile viewport, geolocation, timezone, or CPU throttling for Chrome screenshots/testing.",
+		parameters: Type.Object({
+			action: StringEnum(["device", "geolocation", "timezone", "cpu", "clear"]),
+			width: Type.Optional(Type.Number({ description: "Viewport width (device action). Default 390." })),
+			height: Type.Optional(Type.Number({ description: "Viewport height (device action). Default 844." })),
+			deviceScaleFactor: Type.Optional(Type.Number({ description: "Device pixel ratio (device action). Default 3." })),
+			mobile: Type.Optional(Type.Boolean({ description: "Treat as mobile viewport (device action). Default true." })),
+			userAgent: Type.Optional(Type.String({ description: "Override user agent (device action)." })),
+			latitude: Type.Optional(Type.Number({ description: "Latitude (geolocation action)." })),
+			longitude: Type.Optional(Type.Number({ description: "Longitude (geolocation action)." })),
+			accuracy: Type.Optional(Type.Number({ description: "Accuracy in meters (geolocation action). Default 100." })),
+			timezoneId: Type.Optional(Type.String({ description: "IANA timezone ID, e.g. 'Asia/Tokyo' (timezone action)." })),
+			rate: Type.Optional(Type.Number({ description: "CPU throttle multiplier, e.g. 4 = 4x slowdown (cpu action). Default 4." })),
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const actions: Record<string, string> = { device: "emulate.device", geolocation: "emulate.geolocation", timezone: "emulate.timezone", cpu: "emulate.cpu", clear: "emulate.clear" };
+			const result = await authorizedBridgeSend(actions[params.action] ?? "emulate.device", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_cookies",
+		label: "Chrome Cookies",
+		description:
+			"Read, set, or remove cookies across all domains the user is signed into. Action: 'get' to list cookies (filter by domain/name/url), 'set' to create/update a cookie, 'remove' to delete one. Requires the cookies permission.",
+		promptSnippet: "Get, set, or remove Chrome cookies across all domains.",
+		parameters: Type.Object({
+			action: StringEnum(["get", "set", "remove"]),
+			domain: Type.Optional(Type.String({ description: "Filter by domain (get action)." })),
+			name: Type.Optional(Type.String({ description: "Cookie name (get/set/remove actions)." })),
+			value: Type.Optional(Type.String({ description: "Cookie value (set action)." })),
+			url: Type.Optional(Type.String({ description: "Cookie URL (set/remove actions), or filter (get action)." })),
+			path: Type.Optional(Type.String({ description: "Cookie path (get/set actions)." })),
+			secure: Type.Optional(Type.Boolean({ description: "Secure-only cookie (get/set actions)." })),
+			httpOnly: Type.Optional(Type.Boolean({ description: "HTTP-only cookie (set action)." })),
+			sameSite: Type.Optional(StringEnum(["no_restriction", "lax", "strict"] as const)),
+			expirationDate: Type.Optional(Type.Number({ description: "Expiration as Unix timestamp seconds (set action)." })),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const actions: Record<string, string> = { get: "cookies.getAll", set: "cookies.set", remove: "cookies.remove" };
+			const result = await authorizedBridgeSend(actions[params.action], params, DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_network",
+		label: "Chrome Network Control",
+		description:
+			"Override the browser user-agent string, clear the browser cache, or clear all browser cookies for the current tab. Uses CDP Network domain.",
+		promptSnippet: "Set user-agent, clear cache, or clear cookies for the current Chrome tab.",
+		parameters: Type.Object({
+			action: StringEnum(["userAgent", "clearCache", "clearCookies"]),
+			userAgent: Type.Optional(Type.String({ description: "User-agent string (userAgent action)." })),
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const actions: Record<string, string> = { userAgent: "network.userAgent", clearCache: "network.clearCache", clearCookies: "network.clearCookies" };
+			const result = await authorizedBridgeSend(actions[params.action] ?? "network.clearCache", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_identity",
+		label: "Chrome Identity / OAuth",
+		description:
+			"Get a Google OAuth2 access token using the user's Chrome identity. Requires the identity permission. Pass scopes for specific API access.",
+		promptSnippet: "Get a Google OAuth token via Chrome identity for API access.",
+		parameters: Type.Object({
+			interactive: Type.Optional(Type.Boolean({ description: "If true (default), show Google sign-in prompt if needed. If false, fail silently when no token is cached." })),
+			scopes: Type.Optional(Type.Array(Type.String(), { description: "OAuth scopes, e.g. ['https://www.googleapis.com/auth/drive.readonly']." })),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("identity.getToken", params, 60_000, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
 		},
 	});
 

@@ -1301,6 +1301,110 @@ async function dispatch(action, params) {
       // Close only THIS session's pi-chrome-owned window/tab. Never touches user tabs/windows or
       // another Pi session's target.
       return cleanupAutomationTarget(sessionKeyOf(params));
+    // === Emulation domain (CDP) — no new permissions needed ===
+    case "emulate.device": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Emulation.setDeviceMetricsOverride", {
+        width: params.width ?? 390,
+        height: params.height ?? 844,
+        deviceScaleFactor: params.deviceScaleFactor ?? 3,
+        mobile: params.mobile ?? true,
+        ...(params.userAgent ? { userAgent: params.userAgent } : {}),
+      });
+      return { emulated: "device", width: params.width ?? 390, height: params.height ?? 844, tabId: tab.id };
+    }
+    case "emulate.geolocation": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Emulation.setGeolocationOverride", {
+        latitude: params.latitude ?? 0,
+        longitude: params.longitude ?? 0,
+        accuracy: params.accuracy ?? 100,
+      });
+      return { emulated: "geolocation", latitude: params.latitude, longitude: params.longitude, tabId: tab.id };
+    }
+    case "emulate.timezone": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Emulation.setTimezoneOverride", { timezoneId: params.timezoneId ?? "UTC" });
+      return { emulated: "timezone", timezoneId: params.timezoneId, tabId: tab.id };
+    }
+    case "emulate.cpu": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Emulation.setCPUThrottlingRate", { rate: params.rate ?? 4 });
+      return { emulated: "cpu", rate: params.rate ?? 4, tabId: tab.id };
+    }
+    case "emulate.clear": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Emulation.clearDeviceMetricsOverride", {}).catch(() => undefined);
+      await cdp(tab.id, "Emulation.clearGeolocationOverride", {}).catch(() => undefined);
+      await cdp(tab.id, "Emulation.clearTimezoneOverride", {}).catch(() => undefined);
+      await cdp(tab.id, "Emulation.setCPUThrottlingRate", { rate: 1 }).catch(() => undefined);
+      return { cleared: true, tabId: tab.id };
+    }
+    // === Network domain (CDP) — no new permissions needed ===
+    case "network.userAgent": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Network.setUserAgentOverride", { userAgent: params.userAgent });
+      return { set: true, userAgent: params.userAgent, tabId: tab.id };
+    }
+    case "network.clearCache": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Network.enable", {}).catch(() => undefined);
+      await cdp(tab.id, "Network.clearBrowserCache", {});
+      return { cleared: "cache", tabId: tab.id };
+    }
+    case "network.clearCookies": {
+      const tab = await getTabByParams(params);
+      await attachDebugger(tab.id);
+      await cdp(tab.id, "Network.enable", {}).catch(() => undefined);
+      await cdp(tab.id, "Network.clearBrowserCookies", {});
+      return { cleared: "cookies", tabId: tab.id };
+    }
+    // === Cookies API — needs cookies permission ===
+    case "cookies.getAll": {
+      if (!chrome.cookies) throw new Error("chrome.cookies API unavailable; reload the extension after granting the cookies permission");
+      const cookies = await chrome.cookies.getAll({
+        ...(params.domain ? { domain: params.domain } : {}),
+        ...(params.name ? { name: params.name } : {}),
+        ...(params.path ? { path: params.path } : {}),
+        ...(params.secure !== undefined ? { secure: params.secure } : {}),
+        ...(params.url ? { url: params.url } : {}),
+      });
+      return { cookies: cookies.map((c) => ({ name: c.name, value: c.value.length > 100 ? c.value.slice(0, 100) + "..." : c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite, hostOnly: c.hostOnly, session: c.session, expirationDate: c.expirationDate })) };
+    }
+    case "cookies.set": {
+      if (!chrome.cookies) throw new Error("chrome.cookies API unavailable; reload the extension after granting the cookies permission");
+      if (!params.url) throw new Error("cookies.set requires a url");
+      await chrome.cookies.set({
+        url: params.url,
+        name: params.name,
+        value: params.value ?? "",
+        ...(params.domain ? { domain: params.domain } : {}),
+        ...(params.path ? { path: params.path } : {}),
+        ...(params.secure !== undefined ? { secure: params.secure } : {}),
+        ...(params.httpOnly !== undefined ? { httpOnly: params.httpOnly } : {}),
+        ...(params.sameSite ? { sameSite: params.sameSite } : {}),
+        ...(params.expirationDate ? { expirationDate: params.expirationDate } : {}),
+      });
+      return { set: true, name: params.name, url: params.url };
+    }
+    case "cookies.remove": {
+      if (!chrome.cookies) throw new Error("chrome.cookies API unavailable; reload the extension after granting the cookies permission");
+      if (!params.url) throw new Error("cookies.remove requires a url");
+      await chrome.cookies.remove({ url: params.url, name: params.name });
+      return { removed: true, name: params.name, url: params.url };
+    }
+    // === Identity API — needs identity permission ===
+    case "identity.getToken": {
+      if (!chrome.identity) throw new Error("chrome.identity API unavailable; reload the extension after granting the identity permission");
+      const token = await chrome.identity.getAuthToken({ interactive: params.interactive ?? true, ...(params.scopes ? { scopes: params.scopes } : {}) });
+    }
     default:
       throw new Error(`Unknown action: ${action}`);
   }
