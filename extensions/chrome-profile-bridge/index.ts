@@ -59,6 +59,35 @@ const PI_CHROME_GLOBAL_KEY = "__piChromeProfileBridgeLoaded__";
 // reload) so a /reload — which tears down and re-evaluates the module — does not silently drop
 // an active /chrome authorize grant.
 const PI_CHROME_AUTH_KEY = "__piChromeProfileBridgeAuth__";
+
+// Detect WSL2: /proc/version in WSL2 contains "Microsoft" (WSL2) or "microsoft" (newer builds).
+// Cached since the OS doesn't change mid-session.
+let wslChecked = false;
+let wslIsWsl2 = false;
+function isWsl2(): boolean {
+	if (wslChecked) return wslIsWsl2;
+	wslChecked = true;
+	if (process.platform !== "linux") return false;
+	try {
+		const version = readFileSync("/proc/version", "utf8");
+		wslIsWsl2 = /microsoft/i.test(version);
+	} catch {
+		// Not readable or doesn't exist — not WSL.
+	}
+	return wslIsWsl2;
+}
+
+// Convert a WSL2 Linux path to a Windows path via wslpath. Best-effort; falls back
+// to the original Linux path if wslpath is unavailable or fails.
+function toWindowsPath(linuxPath: string): string {
+	try {
+		const { execSync } = require("node:child_process");
+		return execSync(`wslpath -w ${JSON.stringify(linuxPath)}`, { encoding: "utf8", timeout: 3_000 }).trim();
+	} catch {
+		return linuxPath;
+	}
+}
+
 // In WSL2 NAT mode the bridge must bind 0.0.0.0 (not 127.0.0.1) so Windows Chrome can
 // reach it through WSL2's localhost forwarding. In mirrored mode 127.0.0.1 would work too,
 // but we can't detect the mode at runtime — 0.0.0.0 covers both and is safe: WSL2's NAT
@@ -240,33 +269,6 @@ function hostnameOf(url: string | undefined): string {
 	try { return new URL(url).hostname; } catch { return ""; }
 }
 
-// Detect WSL2: /proc/version in WSL2 contains "Microsoft" (WSL2) or "microsoft" (newer builds).
-// Cached since the OS doesn't change mid-session.
-let wslChecked = false;
-let wslIsWsl2 = false;
-function isWsl2(): boolean {
-	if (wslChecked) return wslIsWsl2;
-	wslChecked = true;
-	if (process.platform !== "linux") return false;
-	try {
-		const version = readFileSync("/proc/version", "utf8");
-		wslIsWsl2 = /microsoft/i.test(version);
-	} catch {
-		// Not readable or doesn't exist — not WSL.
-	}
-	return wslIsWsl2;
-}
-
-// Convert a WSL2 Linux path to a Windows path via wslpath. Best-effort; falls back
-// to the original Linux path if wslpath is unavailable or fails.
-function toWindowsPath(linuxPath: string): string {
-	try {
-		const { execSync } = require("node:child_process");
-		return execSync(`wslpath -w ${JSON.stringify(linuxPath)}`, { encoding: "utf8", timeout: 3_000 }).trim();
-	} catch {
-		return linuxPath;
-	}
-}
 // Description of a click/type/fill result's significant fields so the agent doesn't have to
 // guess whether the action actually changed the page.
 function summarizeActionResult(result: unknown): string | undefined {
