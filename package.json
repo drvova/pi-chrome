@@ -2,7 +2,7 @@
 	"name": "pi-chrome",
 	"version": "0.16.0",
 	"scripts": {
-		"test": "node test-suite/unit/csp-eval.test.mjs && node test-suite/unit/automation-target.test.mjs && node test-suite/unit/tool-scenarios.test.mjs",
+		"test": "node test-suite/unit/csp-eval.test.mjs && node test-suite/unit/automation-target.test.mjs && node test-suite/unit/tool-scenarios.test.mjs && node test-suite/unit/audit-comprehensive.test.mjs",
 		"version": "node scripts/sync-manifest-version.js",
 		"prepublishOnly": "node scripts/sync-manifest-version.js"
 	},
