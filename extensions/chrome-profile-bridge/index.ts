@@ -723,6 +723,7 @@ const CHROME_TOOL_NAMES = [
 	"chrome_sessions",
 	"chrome_status",
 	"chrome_audit",
+	"chrome_inspect_css",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -2282,6 +2283,29 @@ Usage rules:
 			const result = await authorizedBridgeSend("page.audit", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
 			const audit = result as { text?: string; audit?: unknown };
 			return { content: [{ type: "text", text: audit.text ?? safeJson(result) }], details: { audit: audit.audit } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_inspect_css",
+		label: "Chrome CSS Inspector",
+		description:
+			"Get all computed CSS styles for a specific element — like DevTools Computed tab. Groups: Layout, Box, Typography, Visual. Pass uid from a snapshot or CSS selector. No debugger needed.",
+		promptSnippet: "Inspect computed CSS styles for a Chrome element (box model, layout, typography, visual).",
+		parameters: Type.Object({
+			uid: Type.Optional(Type.String({ description: "Element uid from chrome_snapshot." })),
+			selector: Type.Optional(Type.String({ description: "CSS selector if uid unavailable." })),
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("page.css", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			const css = result as { text?: string; css?: unknown };
+			return { content: [{ type: "text", text: css.text ?? safeJson(result) }], details: { css: css.css } };
 		},
 	});
 

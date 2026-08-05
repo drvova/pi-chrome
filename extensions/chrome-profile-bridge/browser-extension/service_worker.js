@@ -1476,6 +1476,9 @@ async function dispatch(action, params) {
             headings: [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].slice(0, 30).map(h => ({ level: parseInt(h.tagName[1]), text: (h.textContent || "").trim().slice(0, 80) })),
             forms: [...document.querySelectorAll("input,textarea,select,button")].slice(0, 30).map(el => ({ tag: el.tagName, type: el.type, label: el.labels?.[0]?.textContent?.trim().slice(0, 40) || el.getAttribute("aria-label") || "", placeholder: el.placeholder, required: el.required, invalid: el.getAttribute("aria-invalid") === "true" || el.validity?.valid === false })),
             links: [...document.querySelectorAll("a[href]")].slice(0, 50).map(a => ({ text: (a.textContent || "").trim().slice(0, 50), href: a.href.slice(0, 100) })),
+            cssVars: (() => { const vars = {}; const sheets = document.styleSheets; for (const sheet of sheets) { try { for (const rule of sheet.cssRules) { if (rule.selectorText === ":root" || rule.selectorText === "html") { for (let i = 0; i < rule.style.length; i++) { const p = rule.style[i]; if (p.startsWith("--")) vars[p] = rule.style.getPropertyValue(p).trim(); } } } } catch {} } return Object.entries(vars).slice(0, 50).map(([k, v]) => ({ name: k, value: v })); })(),
+            webVitals: (() => { const entries = performance.getEntriesByType("navigation"); const nav = entries[0] || {}; const paint = performance.getEntriesByType("paint"); const fcp = paint.find(p => p.name === "first-contentful-paint"); const lcp = performance.getEntriesByType("largest-contentful-paint"); const lastLcp = lcp[lcp.length - 1]; const cls = performance.getEntriesByType("layout-shift").reduce((s, e) => s + (e.value || 0), 0); return { ttfb: Math.round(nav.responseStart || 0), domContentLoaded: Math.round(nav.domContentLoadedEventEnd || 0), loadComplete: Math.round(nav.loadEventEnd || 0), fcp: fcp ? Math.round(fcp.startTime) : null, lcp: lastLcp ? Math.round(lastLcp.startTime) : null, cls: Math.round(cls * 10000) / 10000 }; })(),
+            zindex: [...document.querySelectorAll("*")].filter(el => { const z = getComputedStyle(el).zIndex; return z !== "auto" && z !== "0"; }).slice(0, 30).map(el => { const s = getComputedStyle(el); return { tag: el.tagName, zIndex: s.zIndex, position: s.position, id: el.id || undefined, class: el.className?.toString?.()?.slice?.(0, 40) || undefined }; }),
           };
         },
       }, `design audit in tab ${tab.id}`);
@@ -1491,7 +1494,40 @@ async function dispatch(action, params) {
       if (audit.headings?.length) { lines.push("\n## Heading outline"); for (const h of audit.headings) lines.push(`  ${"  ".repeat(h.level - 1)}h${h.level}: ${h.text}`); }
       if (audit.forms?.length) { lines.push("\n## Forms"); for (const f of audit.forms) { lines.push(`  ${f.tag} ${f.label || f.placeholder || f.type || ""} ${f.required ? "(required)" : ""} ${f.invalid ? "[invalid]" : ""}`); } }
       if (audit.links?.length) { lines.push(`\n## Links (${audit.links.length} total)`); for (const l of audit.links.slice(0, 20)) lines.push(`  ${l.text.slice(0, 40)} → ${l.href.slice(0, 60)}`); }
+      if (audit.cssVars?.length) { lines.push("\n## CSS Variables"); for (const v of audit.cssVars) lines.push(`  ${v.name}: ${v.value}`); }
+      if (audit.webVitals) { lines.push("\n## Web Vitals"); lines.push(`  TTFB: ${audit.webVitals.ttfb}ms`); lines.push(`  FCP: ${audit.webVitals.fcp ?? "?"}ms`); lines.push(`  LCP: ${audit.webVitals.lcp ?? "?"}ms`); lines.push(`  CLS: ${audit.webVitals.cls}`); lines.push(`  DOMContentLoaded: ${audit.webVitals.domContentLoaded}ms`); lines.push(`  Load: ${audit.webVitals.loadComplete}ms`); }
+      if (audit.zindex?.length) { lines.push("\n## Z-Index / Stacking"); for (const z of audit.zindex.slice(0, 15)) lines.push(`  ${z.tag} z-index:${z.zIndex} (${z.position})${z.id ? ` #${z.id}` : ""}${z.class ? ` .${z.class}` : ""}`); }
+      if (audit.domStats) { lines.push("\n## DOM Stats"); lines.push(`  Total elements: ${audit.domStats.totalNodes}`); lines.push(`  Max depth: ${audit.domStats.maxDepth}`); lines.push(`  Inline styles: ${audit.domStats.inlineStyles}`); lines.push(`  Scripts: ${audit.domStats.scripts}, Stylesheets: ${audit.domStats.stylesheets}`); }
       return { text: lines.join("\n"), audit };
+    }
+    case "page.css": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      const results = await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: "MAIN",
+        func: (sel, uid) => {
+          const state = window.__PI_CHROME_STATE__;
+          const el = uid && state && state.elements && state.elements[uid] ? state.elements[uid] : (sel ? document.querySelector(sel) : null);
+          if (!el) return null;
+          const s = getComputedStyle(el);
+          const r = el.getBoundingClientRect();
+          const props = ["display","position","top","right","bottom","left","z-index","width","height","min-width","max-width","padding","padding-top","padding-right","padding-bottom","padding-left","margin","margin-top","margin-right","margin-bottom","margin-left","border","border-width","border-color","border-radius","background-color","color","font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-align","text-decoration","text-transform","overflow","opacity","cursor","flex-direction","justify-content","align-items","gap","grid-template-columns","grid-template-rows","box-shadow","transition","animation","transform"];
+          const computed = {};
+          for (const p of props) computed[p] = s.getPropertyValue(p);
+          return { tag: el.tagName, id: el.id || undefined, class: el.className?.toString?.()?.slice?.(0, 60) || undefined, rect: { x: r.x, y: r.y, width: r.width, height: r.height }, computed };
+        },
+        args: [params.selector ?? null, params.uid ?? null],
+      }, `css inspect in tab ${tab.id}`);
+      const css = results[0]?.result;
+      if (!css) throw new Error("Element not found for CSS inspection");
+      const lines = [`# CSS: ${css.tag}${css.id ? `#${css.id}` : ""}${css.class ? `.${css.class}` : ""}`, `Box: ${css.rect.width}x${css.rect.height} @ ${css.rect.x},${css.rect.y}`];
+      const groups = { Layout: ["display","position","top","right","bottom","left","z-index","flex-direction","justify-content","align-items","gap","grid-template-columns","grid-template-rows"], Box: ["width","height","min-width","max-width","padding","margin","border","border-width","border-color","border-radius"], Typography: ["font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-align","text-decoration","text-transform"], Visual: ["background-color","color","opacity","box-shadow","overflow","cursor","transition","animation","transform"] };
+      for (const [group, props] of Object.entries(groups)) {
+        lines.push(`\n${group}:`);
+        for (const p of props) { const v = css.computed[p]; if (v && v !== "auto" && v !== "normal" && v !== "none") lines.push(`  ${p}: ${v}`); }
+      }
+      return { text: lines.join("\n"), css };
     }
     case "page.screenshot":
       return takeScreenshot(params);
