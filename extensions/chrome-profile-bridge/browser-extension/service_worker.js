@@ -1515,6 +1515,7 @@ async function dispatch(action, params) {
     case "identity.getToken": {
       if (!chrome.identity) throw new Error("chrome.identity API unavailable; reload the extension after granting the identity permission");
       const token = await chrome.identity.getAuthToken({ interactive: params.interactive ?? true, ...(params.scopes ? { scopes: params.scopes } : {}) });
+      return { token: token || null };
     }
     // === Downloads API — needs downloads permission ===
     case "downloads.download": {
