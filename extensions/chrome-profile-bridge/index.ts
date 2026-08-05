@@ -1886,7 +1886,15 @@ Usage rules:
 			path: Type.Optional(Type.String({ description: "Output path. Defaults to .pi/chrome-screenshots/<timestamp>.<format>." })),
 			format: Type.Optional(StringEnum(imageFormatValues)),
 			quality: Type.Optional(Type.Number({ description: "JPEG quality 0-100." })),
-			fullPage: Type.Optional(Type.Boolean({ description: "Not supported by the extension bridge yet; viewport screenshots are captured." })),
+			fullPage: Type.Optional(Type.Boolean({ description: "Capture the full scrollable page via tile stitching." })),
+			uid: Type.Optional(Type.String({ description: "Screenshot only this element (by snapshot uid). Uses CDP clip capture." })),
+			selector: Type.Optional(Type.String({ description: "Screenshot only this element (by CSS selector)." })),
+			breakpoints: Type.Optional(Type.Array(Type.Object({
+				width: Type.Optional(Type.Number()),
+				height: Type.Optional(Type.Number()),
+				mobile: Type.Optional(Type.Boolean()),
+				name: Type.Optional(Type.String()),
+			}), { description: "Responsive sweep: capture screenshots at multiple viewport widths. Each entry can have width, height, mobile, name." })),
 			targetId: Type.Optional(Type.String()),
 			urlIncludes: Type.Optional(Type.String()),
 			titleIncludes: Type.Optional(Type.String()),
@@ -1903,11 +1911,14 @@ Usage rules:
 			const outputPath = params.path ? resolve(cwd, params.path) : defaultPath;
 			const result = (await authorizedBridgeSend("page.screenshot", withBackground(params), params.fullPage ? 120_000 : DEFAULT_TIMEOUT_MS, signal)) as {
 				dataUrl?: string;
-				tab?: unknown;
-				fullPage?: boolean;
-				dimensions?: { width: number; height: number; viewportHeight: number; dpr: number };
-				tiles?: Array<{ y: number; dataUrl: string }>;
-			};
+			tab?: unknown;
+			fullPage?: boolean;
+			dimensions?: { width: number; height: number; viewportHeight: number; dpr: number };
+			tiles?: Array<{ y: number; dataUrl: string }>;
+			elementRect?: { x: number; y: number; width: number; height: number };
+			sweep?: boolean;
+			screenshots?: Array<{ name: string; dataUrl: string }>;
+		};
 			await mkdir(dirname(outputPath), { recursive: true });
 			if (result.fullPage && result.tiles && result.dimensions) {
 				// Stitch via PNG if format is png; otherwise we fall back to writing tile files and a
@@ -1928,6 +1939,26 @@ Usage rules:
 					details: { manifest: outputPath + ".json", tiles: manifest, dimensions: result.dimensions, tab: result.tab } as unknown as Record<string, unknown>,
 				};
 			}
+
+			// Responsive sweep: save each breakpoint screenshot separately
+			if (result.sweep && result.screenshots) {
+				const saved = [];
+				for (const shot of result.screenshots) {
+					const sweepPath = join(dirname(outputPath), `${params.path ? "" : new Date().toISOString().replace(/[:.]/g, "-")}-${shot.name}.${format}`);
+					const b64 = shot.dataUrl.replace(/^data:image\/(?:png|jpeg);base64,/, "");
+					await writeFile(sweepPath, Buffer.from(b64, "base64"));
+					saved.push({ name: shot.name, path: sweepPath });
+				}
+				return { content: [{ type: "text", text: `Saved ${saved.length} responsive screenshots to ${dirname(outputPath)}\n${saved.map((s) => `  ${s.name}: ${s.path}`).join("\n")}` }], details: { sweep: saved } };
+			}
+
+			// Element screenshot
+			if (result.elementRect && result.dataUrl) {
+				const base64 = result.dataUrl.replace(/^data:image\/(?:png|jpeg);base64,/, "");
+				await writeFile(outputPath, Buffer.from(base64, "base64"));
+				return { content: [{ type: "text", text: `Saved element screenshot to ${outputPath} (${result.elementRect.width}x${result.elementRect.height}px)` }], details: { path: outputPath, format, elementRect: result.elementRect } };
+			}
+
 			if (!result.dataUrl) throw new Error("Screenshot returned no dataUrl");
 			const base64 = result.dataUrl.replace(/^data:image\/(?:png|jpeg);base64,/, "");
 			await writeFile(outputPath, Buffer.from(base64, "base64"));

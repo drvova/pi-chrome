@@ -1473,6 +1473,9 @@ async function dispatch(action, params) {
             images: [...imgSet].slice(0, 10),
             contrastIssues: contrastIssues,
             totalElements: els.length,
+            headings: [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].slice(0, 30).map(h => ({ level: parseInt(h.tagName[1]), text: (h.textContent || "").trim().slice(0, 80) })),
+            forms: [...document.querySelectorAll("input,textarea,select,button")].slice(0, 30).map(el => ({ tag: el.tagName, type: el.type, label: el.labels?.[0]?.textContent?.trim().slice(0, 40) || el.getAttribute("aria-label") || "", placeholder: el.placeholder, required: el.required, invalid: el.getAttribute("aria-invalid") === "true" || el.validity?.valid === false })),
+            links: [...document.querySelectorAll("a[href]")].slice(0, 50).map(a => ({ text: (a.textContent || "").trim().slice(0, 50), href: a.href.slice(0, 100) })),
           };
         },
       }, `design audit in tab ${tab.id}`);
@@ -1485,6 +1488,9 @@ async function dispatch(action, params) {
       if (audit.fontSizes?.length) { lines.push("\n## Font sizes"); lines.push(`  ${audit.fontSizes.join(", ")}`); }
       if (audit.imageCount) { lines.push(`\n## Images: ${audit.imageCount} total`); for (const src of (audit.images || []).slice(0, 5)) lines.push(`  ${src.slice(0, 80)}`); }
       lines.push(`\n## Contrast: ${audit.contrastIssues} potential issues (below 4.5:1) out of ~${Math.min(200, audit.totalElements)} checked`);
+      if (audit.headings?.length) { lines.push("\n## Heading outline"); for (const h of audit.headings) lines.push(`  ${"  ".repeat(h.level - 1)}h${h.level}: ${h.text}`); }
+      if (audit.forms?.length) { lines.push("\n## Forms"); for (const f of audit.forms) { lines.push(`  ${f.tag} ${f.label || f.placeholder || f.type || ""} ${f.required ? "(required)" : ""} ${f.invalid ? "[invalid]" : ""}`); } }
+      if (audit.links?.length) { lines.push(`\n## Links (${audit.links.length} total)`); for (const l of audit.links.slice(0, 20)) lines.push(`  ${l.text.slice(0, 40)} → ${l.href.slice(0, 60)}`); }
       return { text: lines.join("\n"), audit };
     }
     case "page.screenshot":
@@ -2067,6 +2073,37 @@ async function takeScreenshot(params) {
         dimensions: { width: tiles.width, height: tiles.height, viewportHeight: tiles.viewportHeight, dpr: tiles.dpr },
         tiles: captured,
       };
+    }
+    // Element screenshot: capture only the bounding box of a specific element.
+    if (params.uid || params.selector) {
+      await attachDebugger(tab.id);
+      const rectResult = await cdp(tab.id, "Runtime.evaluate", {
+        expression: `(() => {
+          const state = window.__PI_CHROME_STATE__;
+          const el = ${params.uid ? `state && state.elements && state.elements['${params.uid}']` : `document.querySelector(${JSON.stringify(params.selector)})`};
+          if (!el || !el.isConnected) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height, scrollX: window.scrollX, scrollY: window.scrollY };
+        })()`,
+        returnByValue: true,
+      });
+      const rect = rectResult?.result?.value;
+      if (!rect || !rect.width) throw new Error("Element not found or has no visible bounds for screenshot");
+      const clip = { x: rect.x + rect.scrollX, y: rect.y + rect.scrollY, width: rect.width, height: rect.height, scale: 1 };
+      const shot = await cdp(tab.id, "Page.captureScreenshot", { format: params.format || "png", clip });
+      return { dataUrl: shot?.data ? `data:image/${params.format || "png"};base64,${shot.data}` : null, tab: await formatTab(tab), elementRect: rect };
+    }
+    // Responsive sweep: capture screenshots at multiple breakpoints.
+    if (params.breakpoints && Array.isArray(params.breakpoints)) {
+      const shots = [];
+      for (const bp of params.breakpoints) {
+        await cdp(tab.id, "Emulation.setDeviceMetricsOverride", { width: bp.width || 390, height: bp.height || 844, deviceScaleFactor: 1, mobile: !!bp.mobile });
+        await sleep(300); // settle
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: params.format || "png" });
+        shots.push({ name: bp.name || `${bp.width}x${bp.height}`, dataUrl });
+      }
+      await cdp(tab.id, "Emulation.clearDeviceMetricsOverride", {}).catch(() => undefined);
+      return { sweep: true, screenshots: shots, tab: await formatTab(tab) };
     }
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: params.format || "png",
