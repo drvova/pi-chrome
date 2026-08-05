@@ -98,6 +98,23 @@ Ask the user to run `/chrome authorize`. Default 15 minutes.
 ### "It worked before but now it doesn't"
 Stale snapshot uid after navigation or DOM change. Run `chrome_snapshot` again, then retry.
 
+## Design engineer workflows
+
+### "Audit this page's design system"
+`chrome_audit` — extracts colors, backgrounds, fonts, font sizes, spacing scale, border radius, shadows, transitions, CSS variables, media queries, Web Vitals, z-index, DOM stats, heading outline, forms, links, contrast issues, and ARIA issues in one call.
+
+### "What CSS does this element have?"
+`chrome_inspect_css` with `uid` (from snapshot) or `selector`. Returns computed styles grouped by Layout, Box, Typography, Visual — like DevTools Computed tab.
+
+### "Screenshot just this element"
+`chrome_screenshot` with `uid` or `selector`. Captures only the element's bounding box via CDP clip.
+
+### "Screenshot at multiple breakpoints"
+`chrome_screenshot` with `breakpoints: [{ width: 390, name: "mobile" }, { width: 1920, name: "desktop" }]`. Saves each separately.
+
+### "Check responsive on iPhone/iPad"
+`chrome_emulate` with `action: "preset"` and `preset: "iphone-15"` (or `ipad`, `pixel-8`, `galaxy-s24`, `desktop-1080`, `desktop-1440`). Then `chrome_screenshot`.
+
 ## Rules
 
 - If the connector is unavailable, report the extension directory from `chrome_status` and ask the user to open Chrome. Do not substitute a different profile or transport.
