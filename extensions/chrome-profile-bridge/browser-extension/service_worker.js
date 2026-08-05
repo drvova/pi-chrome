@@ -453,8 +453,27 @@ async function cdp(tabId, method, params) {
       }
     }
     if (!isStale) throw error;
+    // Input commands must NOT be retried after detachment. The original event may have
+    // partially applied (double-click/double-type risk), or the page navigated and the
+    // target element no longer exists. Surface a clear error so the caller can snapshot
+    // and decide whether to retry manually.
+    if (/Input\./.test(method)) {
+      attachedTabs.delete(tabId);
+      throw new Error(
+        `${method} failed: the Chrome debugger detached mid-command (the page may have navigated, DevTools was opened, or the tab crashed). ` +
+        `Take a fresh chrome_snapshot and retry the action.`,
+      );
+    }
+    // Non-input commands (DOM, Runtime, Page, Network, Emulation) are safe to retry
+    // because they are read-only or idempotent setup operations.
     attachedTabs.delete(tabId);
-    await attachDebugger(tabId).catch(() => undefined);
+    const reattached = await attachDebugger(tabId).catch(() => null);
+    if (!reattached) {
+      throw new Error(
+        `${method} failed: the Chrome debugger detached and could not be re-attached to tab ${tabId}. ` +
+        `The tab may have been closed or navigated to a protected URL (chrome://, devtools://).`,
+      );
+    }
     return cdpRaw(tabId, method, params);
   }
 }
