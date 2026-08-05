@@ -479,18 +479,33 @@ async function cdp(tabId, method, params) {
       }
     }
     if (!isStale) throw error;
-    // Input commands must NOT be retried after detachment. The original event may have
-    // partially applied (double-click/double-type risk), or the page navigated and the
-    // target element no longer exists. Surface a clear error so the caller can snapshot
-    // and decide whether to retry manually.
+    // Input commands: retry ONCE after re-attach, then give up.
+    // A single CDP sendCommand that fails with 'Detached while handling command' did
+    // NOT fire its event — Chrome's callback returns lastError when sendCommand
+    // doesn't complete. So one retry after re-attach is safe (no double-fire risk
+    // for a single atomic event). But we don't retry indefinitely: if re-attach
+    // fails, or the retry also fails, we release stuck input and throw clearly.
     if (/Input\./.test(method)) {
       attachedTabs.delete(tabId);
-      // Release any stuck buttons/modifiers so the next action starts clean.
-      await releaseStuckInput(tabId).catch(() => undefined);
-      throw new Error(
-        `${method} failed: the Chrome debugger detached mid-command (the page may have navigated, DevTools was opened, or the tab crashed). ` +
-        `Take a fresh chrome_snapshot and retry the action.`,
-      );
+      const reattached = await attachDebugger(tabId).catch(() => null);
+      if (!reattached) {
+        await releaseStuckInput(tabId).catch(() => undefined);
+        throw new Error(
+          `${method} failed: the Chrome debugger detached and could not be re-attached to tab ${tabId}. ` +
+          `The page may have navigated, DevTools was opened, or the tab crashed. ` +
+          `Take a fresh chrome_snapshot and retry the action.`,
+        );
+      }
+      try {
+        return await cdpRaw(tabId, method, params);
+      } catch (retryError) {
+        // Retry also failed — release stuck input and surface a clear error.
+        await releaseStuckInput(tabId).catch(() => undefined);
+        throw new Error(
+          `${method} failed after re-attach attempt: ${String(retryError?.message || retryError)}. ` +
+          `Take a fresh chrome_snapshot and retry the action.`,
+        );
+      }
     }
     // Non-input commands (DOM, Runtime, Page, Network, Emulation) are safe to retry
     // because they are read-only or idempotent setup operations.
