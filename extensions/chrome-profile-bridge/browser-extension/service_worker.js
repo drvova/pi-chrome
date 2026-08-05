@@ -1412,6 +1412,81 @@ async function dispatch(action, params) {
       await cdp(tab.id, "Runtime.evaluate", { expression: "delete window.__PI_CHROME_STATE__", returnByValue: true }).catch(() => undefined);
       return await formatTab(await chrome.tabs.get(tab.id));
     }
+    case "page.audit": {
+      const tab = await getTabByParams(params);
+      if (params.foreground) await bringToFront(tab);
+      // Extract design tokens: colors, fonts, spacing, images, contrast issues.
+      // Runs as a single executeScript in the page's MAIN world — no debugger needed.
+      const results = await executeScriptTimed({
+        target: { tabId: tab.id, frameIds: [0] },
+        world: "MAIN",
+        func: () => {
+          const all = [];
+          const els = document.querySelectorAll("*");
+          const colorSet = new Set();
+          const bgSet = new Set();
+          const fontSet = new Map();
+          const sizeSet = new Set();
+          const imgSet = new Set();
+          let contrastIssues = 0;
+          for (const el of els) {
+            const s = getComputedStyle(el);
+            if (s.color && s.color !== "rgba(0, 0, 0, 0)") colorSet.add(s.color);
+            if (s.backgroundColor && s.backgroundColor !== "rgba(0, 0, 0, 0)") bgSet.add(s.backgroundColor);
+            if (s.fontFamily) { const f = s.fontFamily.split(",")[0].trim().replace(/["']/g, ""); if (f) { fontSet.set(f, (fontSet.get(f) || 0) + 1); } }
+            if (s.fontSize) sizeSet.add(s.fontSize);
+            if (el.tagName === "IMG" && el.src) imgSet.add(el.src);
+          }
+          function toHex(color) {
+            const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (!m) return color;
+            return "#" + [1, 2, 3].map(i => parseInt(m[i]).toString(16).padStart(2, "0")).join("");
+          }
+          function contrastRatio(fg, bg) {
+            const m1 = fg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            const m2 = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (!m1 || !m2) return 999;
+            function lum(r, g, b) {
+              [r, g, b] = [r, g, b].map(c => { c /= 255; return c <= 0.039 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+              return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            }
+            const l1 = lum(+m1[1], +m1[2], +m1[3]);
+            const l2 = lum(+m2[1], +m2[2], +m2[3]);
+            return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+          }
+          // Check text contrast on first 200 elements
+          let checked = 0;
+          for (const el of els) {
+            if (checked++ > 200) break;
+            const s = getComputedStyle(el);
+            if (el.textContent && el.textContent.trim() && s.fontSize) {
+              const r = contrastRatio(s.color, s.backgroundColor === "rgba(0, 0, 0, 0)" ? "rgb(255,255,255)" : s.backgroundColor);
+              if (r < 4.5) contrastIssues++;
+            }
+          }
+          return {
+            colors: [...colorSet].slice(0, 30).map(toHex),
+            backgrounds: [...bgSet].slice(0, 20).map(toHex),
+            fonts: [...fontSet.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([f, c]) => ({ family: f, count: c })),
+            fontSizes: [...sizeSet].slice(0, 15),
+            imageCount: imgSet.size,
+            images: [...imgSet].slice(0, 10),
+            contrastIssues: contrastIssues,
+            totalElements: els.length,
+          };
+        },
+      }, `design audit in tab ${tab.id}`);
+      const audit = results[0]?.result;
+      if (!audit) throw new Error("Could not extract design tokens from the page");
+      const lines = ["# Design Audit"];
+      if (audit.colors?.length) { lines.push("\n## Colors"); for (const c of audit.colors.slice(0, 15)) lines.push(`  ${c}`); }
+      if (audit.backgrounds?.length) { lines.push("\n## Backgrounds"); for (const c of audit.backgrounds.slice(0, 10)) lines.push(`  ${c}`); }
+      if (audit.fonts?.length) { lines.push("\n## Fonts"); for (const f of audit.fonts) lines.push(`  ${f.family} (${f.count} elements)`); }
+      if (audit.fontSizes?.length) { lines.push("\n## Font sizes"); lines.push(`  ${audit.fontSizes.join(", ")}`); }
+      if (audit.imageCount) { lines.push(`\n## Images: ${audit.imageCount} total`); for (const src of (audit.images || []).slice(0, 5)) lines.push(`  ${src.slice(0, 80)}`); }
+      lines.push(`\n## Contrast: ${audit.contrastIssues} potential issues (below 4.5:1) out of ~${Math.min(200, audit.totalElements)} checked`);
+      return { text: lines.join("\n"), audit };
+    }
     case "page.screenshot":
       return takeScreenshot(params);
     case "automation.status": {

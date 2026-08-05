@@ -722,6 +722,7 @@ const CHROME_TOOL_NAMES = [
 	"chrome_history",
 	"chrome_sessions",
 	"chrome_status",
+	"chrome_audit",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -1041,6 +1042,9 @@ Usage rules:
 12. \`chrome_downloads\`, \`chrome_history\`, and \`chrome_sessions\` access browser-wide state.
 13. \`chrome_identity\` gets a Google OAuth2 token for API access.
 14. \`chrome_status\` checks bridge health without needing \`/chrome authorize\`.
+15. \`chrome_emulate\` presets: iphone-15, iphone-se, ipad, pixel-8, galaxy-s24, desktop-1080, desktop-1440. Pass action='preset' and preset name. Use before screenshots to test responsive layouts.
+16. \`chrome_audit\` extracts design tokens (colors, fonts, contrast) from the page — use for design system audits and accessibility checks.
+17. \`chrome_navigate\` with action='reload' refreshes the page; bypassCache=true for a hard refresh.
 </chrome-profile-bridge>`;
 		return { systemPrompt: event.systemPrompt + primer };
 	});
@@ -2027,20 +2031,21 @@ Usage rules:
 		name: "chrome_emulate",
 		label: "Chrome Emulate Device",
 		description:
-			"Emulate a mobile device, set geolocation, override timezone, or throttle CPU for the current tab. Uses CDP Emulation domain — no new permissions needed. Pass action: 'clear' to reset all overrides.",
-		promptSnippet: "Emulate mobile viewport, geolocation, timezone, or CPU throttling for Chrome screenshots/testing.",
+			"Emulate a mobile device or preset, set geolocation, override timezone, or throttle CPU. Presets: iphone-15, iphone-se, ipad, pixel-8, galaxy-s24, desktop-1080, desktop-1440. Or pass action='device' with custom width/height. Pass action='clear' to reset.",
+		promptSnippet: "Emulate mobile/desktop viewport, geolocation, timezone, or CPU throttle. Presets available.",
 		parameters: Type.Object({
-			action: StringEnum(["device", "geolocation", "timezone", "cpu", "clear"]),
-			width: Type.Optional(Type.Number({ description: "Viewport width (device action). Default 390." })),
-			height: Type.Optional(Type.Number({ description: "Viewport height (device action). Default 844." })),
-			deviceScaleFactor: Type.Optional(Type.Number({ description: "Device pixel ratio (device action). Default 3." })),
-			mobile: Type.Optional(Type.Boolean({ description: "Treat as mobile viewport (device action). Default true." })),
+			action: StringEnum(["device", "preset", "geolocation", "timezone", "cpu", "clear"]),
+			preset: Type.Optional(StringEnum(["iphone-15", "iphone-se", "ipad", "pixel-8", "galaxy-s24", "desktop-1080", "desktop-1440"] as const)),
+			width: Type.Optional(Type.Number({ description: "Viewport width (device action)." })),
+			height: Type.Optional(Type.Number({ description: "Viewport height (device action)." })),
+			deviceScaleFactor: Type.Optional(Type.Number({ description: "Device pixel ratio (device action)." })),
+			mobile: Type.Optional(Type.Boolean({ description: "Treat as mobile viewport (device action)." })),
 			userAgent: Type.Optional(Type.String({ description: "Override user agent (device action)." })),
-			latitude: Type.Optional(Type.Number({ description: "Latitude (geolocation action)." })),
-			longitude: Type.Optional(Type.Number({ description: "Longitude (geolocation action)." })),
-			accuracy: Type.Optional(Type.Number({ description: "Accuracy in meters (geolocation action). Default 100." })),
-			timezoneId: Type.Optional(Type.String({ description: "IANA timezone ID, e.g. 'Asia/Tokyo' (timezone action)." })),
-			rate: Type.Optional(Type.Number({ description: "CPU throttle multiplier, e.g. 4 = 4x slowdown (cpu action). Default 4." })),
+			latitude: Type.Optional(Type.Number()),
+			longitude: Type.Optional(Type.Number()),
+			accuracy: Type.Optional(Type.Number()),
+			timezoneId: Type.Optional(Type.String()),
+			rate: Type.Optional(Type.Number()),
 			targetId: Type.Optional(Type.String()),
 			urlIncludes: Type.Optional(Type.String()),
 			titleIncludes: Type.Optional(Type.String()),
@@ -2049,6 +2054,21 @@ Usage rules:
 			port: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params, signal): Promise<ToolTextResult> {
+			// Preset → resolve to device params, then send as emulate.device
+			if (params.action === "preset" || (params.action === "device" && params.preset)) {
+				const presets: Record<string, { width: number; height: number; deviceScaleFactor: number; mobile: boolean; userAgent: string }> = {
+					"iphone-15": { width: 393, height: 852, deviceScaleFactor: 3, mobile: true, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
+					"iphone-se": { width: 375, height: 667, deviceScaleFactor: 2, mobile: true, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
+					"ipad": { width: 1024, height: 1366, deviceScaleFactor: 2, mobile: true, userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
+					"pixel-8": { width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true, userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36" },
+					"galaxy-s24": { width: 360, height: 780, deviceScaleFactor: 3, mobile: true, userAgent: "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36" },
+					"desktop-1080": { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+					"desktop-1440": { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+				};
+				const preset = presets[params.preset ?? "iphone-15"];
+				const result = await authorizedBridgeSend("emulate.device", withBackground({ ...preset, targetId: params.targetId, urlIncludes: params.urlIncludes, titleIncludes: params.titleIncludes }), DEFAULT_TIMEOUT_MS, signal);
+				return { content: [{ type: "text", text: `Emulated ${params.preset ?? "iphone-15"}: ${preset.width}x${preset.height} @ ${preset.deviceScaleFactor}x dpr${preset.mobile ? " (mobile)" : ""}` }], details: { result } };
+			}
 			const actions: Record<string, string> = { device: "emulate.device", geolocation: "emulate.geolocation", timezone: "emulate.timezone", cpu: "emulate.cpu", clear: "emulate.clear" };
 			const result = await authorizedBridgeSend(actions[params.action] ?? "emulate.device", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
 			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
@@ -2210,6 +2230,27 @@ Usage rules:
 				parts.push(`Connected: no — ${(error as Error).message}`);
 			}
 			return { content: [{ type: "text", text: parts.join("\n") }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_audit",
+		label: "Chrome Design Audit",
+		description:
+			"Extract design tokens from the current page: colors, backgrounds, fonts, font sizes, image count, and WCAG contrast issues. No debugger needed — runs as a single page script. Use for design system extraction, color palette auditing, and accessibility checks.",
+		promptSnippet: "Extract colors, fonts, spacing, and contrast from a Chrome page for design audit.",
+		parameters: Type.Object({
+			targetId: Type.Optional(Type.String()),
+			urlIncludes: Type.Optional(Type.String()),
+			titleIncludes: Type.Optional(Type.String()),
+			background: Type.Optional(Type.Boolean()),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("page.audit", withBackground(params), DEFAULT_TIMEOUT_MS, signal);
+			const audit = result as { text?: string; audit?: unknown };
+			return { content: [{ type: "text", text: audit.text ?? safeJson(result) }], details: { audit: audit.audit } };
 		},
 	});
 
