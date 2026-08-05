@@ -21,6 +21,11 @@ You:    [keeps coding — agent never asked you to log in]
 pi install npm:pi-chrome
 ```
 
+Install from source:
+
+```bash
+pi install github:drvova/pi-chrome
+```
 In Pi:
 
 ```text
