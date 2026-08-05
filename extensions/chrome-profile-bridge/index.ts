@@ -64,7 +64,10 @@ const DEFAULT_PORT = Number(process.env.PI_CHROME_BRIDGE_PORT ?? "17318");
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TEXT_CHARS = 30_000;
 const MAX_ELEMENTS = 80;
+const BIND_RETRIES = 5;
+const BIND_RETRY_DELAY_MS = 50;
 
+function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
 function truncateText(text: string, maxChars = MAX_TEXT_CHARS): string {
 	if (text.length <= maxChars) return text;
 	return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} characters]`;
@@ -341,29 +344,38 @@ class ChromeProfileBridge {
 
 	// Try to own the bridge port. On success we are the server; on EADDRINUSE another Pi
 	// session owns it and we run as a client that forwards commands to that owner.
+	//
+	// On /reload the old bridge's server.close() is async — the socket may still be bound
+	// for a few hundred ms while connections drain. Retry EADDRINUSE a few times before
+	// concluding a different session genuinely owns the port, so /reload rebinds cleanly
+	// instead of falling through to client mode pointed at a dead server.
 	private async bindServerOrClient(): Promise<void> {
-		const server = createServer((request, response) => {
-			void this.handle(request, response).catch((error) => {
-				sendJson(response, 500, { error: (error as Error).message });
-			});
-		});
-		try {
-			await new Promise<void>((resolveStart, rejectStart) => {
-				server.once("error", rejectStart);
-				server.listen(this.port, this.host, () => {
-					server.off("error", rejectStart);
-					resolveStart();
+		for (let attempt = 0; attempt < BIND_RETRIES; attempt++) {
+			const server = createServer((request, response) => {
+				void this.handle(request, response).catch((error) => {
+					sendJson(response, 500, { error: (error as Error).message });
 				});
 			});
-			this.server = server;
-			this.mode = "server";
-		} catch (error) {
-			server.close();
-			if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-			// Another Pi session already owns the bridge port. Use it as the shared
-			// machine-local broker so multiple Pi sessions can control Chrome at once.
-			this.mode = "client";
+			try {
+				await new Promise<void>((resolveStart, rejectStart) => {
+					server.once("error", rejectStart);
+					server.listen(this.port, this.host, () => {
+						server.off("error", rejectStart);
+						resolveStart();
+					});
+				});
+				this.server = server;
+				this.mode = "server";
+				return;
+			} catch (error) {
+				server.close();
+				if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+				if (attempt < BIND_RETRIES - 1) await sleep(BIND_RETRY_DELAY_MS * (attempt + 1));
+			}
 		}
+		// Another Pi session genuinely owns the bridge port. Use it as the shared
+		// machine-local broker so multiple Pi sessions can control Chrome at once.
+		this.mode = "client";
 	}
 
 	// Client-mode self-heal: when the owning Pi session disappears, fetches to its port fail
@@ -389,6 +401,11 @@ class ChromeProfileBridge {
 		this.queue = [];
 		for (const waiter of this.waiters) waiter(undefined);
 		this.waiters = [];
+		// Force-kill all connections so the port is released immediately, not after the
+		// companion extension's long-poll drains. Without this, /reload races: the new
+		// bridge sees EADDRINUSE and falls to client mode pointed at a dead server.
+		// closeAllConnections is Node 18.2+; guard for older versions.
+		this.server?.closeAllConnections?.();
 		this.server?.close();
 		this.server = undefined;
 		this.mode = undefined;
