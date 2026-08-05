@@ -718,6 +718,10 @@ const CHROME_TOOL_NAMES = [
 	"chrome_cookies",
 	"chrome_network",
 	"chrome_identity",
+	"chrome_downloads",
+	"chrome_history",
+	"chrome_sessions",
+	"chrome_status",
 	"chrome_upload_file",
 ] as const;
 const CHROME_TOOL_NAME_SET = new Set<string>(CHROME_TOOL_NAMES);
@@ -2106,6 +2110,96 @@ Usage rules:
 		async execute(_id, params, signal): Promise<ToolTextResult> {
 			const result = await authorizedBridgeSend("identity.getToken", params, 60_000, signal);
 			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_downloads",
+		label: "Chrome Downloads",
+		description:
+			"Download a file by URL or list recent downloads. Action: 'download' to start a download (url required, optional filename, saveAs, conflictAction), 'list' to query recent downloads.",
+		promptSnippet: "Download files or list recent Chrome downloads.",
+		parameters: Type.Object({
+			action: StringEnum(["download", "list"]),
+			url: Type.Optional(Type.String({ description: "Download URL (download action)." })),
+			filename: Type.Optional(Type.String({ description: "Suggest a filename, optionally with relative path (download action)." })),
+			saveAs: Type.Optional(Type.Boolean({ description: "If true, show the Save As dialog (download action)." })),
+			conflictAction: Type.Optional(StringEnum(["uniquify", "overwrite", "prompt"] as const)),
+			state: Type.Optional(StringEnum(["in_progress", "interrupted", "complete"] as const)),
+			filenameRegex: Type.Optional(Type.String()),
+			limit: Type.Optional(Type.Number({ description: "Max results (list action). Default 10." })),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const action = params.action === "list" ? "downloads.list" : "downloads.download";
+			const result = await authorizedBridgeSend(action, params, DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_history",
+		label: "Chrome History",
+		description:
+			"Search browsing history or delete a URL from history. Action: 'search' to find visited pages by text (returns url, title, visit count, last visit time), 'delete' to remove a URL from history.",
+		promptSnippet: "Search Chrome browsing history or delete a URL.",
+		parameters: Type.Object({
+			action: StringEnum(["search", "delete"]),
+			text: Type.Optional(Type.String({ description: "Search query (search action). Empty string = all history." })),
+			startTime: Type.Optional(Type.Number({ description: "Epoch ms to search from. Default: 7 days ago." })),
+			maxResults: Type.Optional(Type.Number({ description: "Max results (search action). Default 20." })),
+			url: Type.Optional(Type.String({ description: "URL to delete (delete action)." })),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const action = params.action === "delete" ? "history.deleteUrl" : "history.search";
+			const result = await authorizedBridgeSend(action, params, DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_sessions",
+		label: "Chrome Sessions",
+		description: "List recently closed tabs and windows that Chrome can restore.",
+		promptSnippet: "List recently closed Chrome tabs/windows.",
+		parameters: Type.Object({
+			maxResults: Type.Optional(Type.Number({ description: "Max results. Default 10." })),
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, signal): Promise<ToolTextResult> {
+			const result = await authorizedBridgeSend("sessions.recent", params, DEFAULT_TIMEOUT_MS, signal);
+			return { content: [{ type: "text", text: safeJson(result) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "chrome_status",
+		label: "Chrome Status",
+		description:
+			"Check Chrome bridge connectivity, extension version, and authorization state without changing anything. Use this first when Chrome tool behavior is unexpected.",
+		promptSnippet: "Check Chrome bridge health and connectivity.",
+		parameters: Type.Object({
+			host: Type.Optional(Type.String()),
+			port: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, _params, signal): Promise<ToolTextResult> {
+			const status = bridge.status();
+			const roleLabel = status.mode === "client" ? "sharing another pi session's connection" : "running the Chrome connection for this machine";
+			const parts: string[] = [`pi-chrome v${PI_CHROME_VERSION}`, `Role: ${roleLabel}`, `Auth: ${authSummary()}`, `Background: ${backgroundDefault ? "on" : "off"}`];
+			try {
+				const started = Date.now();
+				const version = (await authorizedBridgeSend("tab.version", {}, 10_000, signal)) as { extensionVersion?: string };
+				const latencyMs = Date.now() - started;
+				parts.push(`Extension: v${version.extensionVersion ?? "?"} (${latencyMs}ms)`);
+				parts.push(`Connected: yes`);
+			} catch (error) {
+				parts.push(`Connected: no — ${(error as Error).message}`);
+			}
+			return { content: [{ type: "text", text: parts.join("\n") }] };
 		},
 	});
 

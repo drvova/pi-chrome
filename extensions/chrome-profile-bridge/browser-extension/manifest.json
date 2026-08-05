@@ -14,7 +14,10 @@
     "webNavigation",
     "debugger",
     "cookies",
-    "identity"
+    "identity",
+    "downloads",
+    "history",
+    "sessions"
   ],
   "host_permissions": [
     "<all_urls>",

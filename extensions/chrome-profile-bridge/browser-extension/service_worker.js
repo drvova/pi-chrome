@@ -1405,6 +1405,52 @@ async function dispatch(action, params) {
       if (!chrome.identity) throw new Error("chrome.identity API unavailable; reload the extension after granting the identity permission");
       const token = await chrome.identity.getAuthToken({ interactive: params.interactive ?? true, ...(params.scopes ? { scopes: params.scopes } : {}) });
     }
+    // === Downloads API — needs downloads permission ===
+    case "downloads.download": {
+      if (!chrome.downloads) throw new Error("chrome.downloads API unavailable; reload the extension after granting the downloads permission");
+      const id = await chrome.downloads.download({
+        url: params.url,
+        ...(params.filename ? { filename: params.filename } : {}),
+        ...(params.saveAs !== undefined ? { saveAs: params.saveAs } : {}),
+        ...(params.conflictAction ? { conflictAction: params.conflictAction } : {}),
+      });
+      return { downloaded: true, downloadId: id };
+    }
+    case "downloads.list": {
+      if (!chrome.downloads) throw new Error("chrome.downloads API unavailable; reload the extension after granting the downloads permission");
+      const items = await chrome.downloads.search({
+        ...(params.state ? { state: params.state } : {}),
+        ...(params.filenameRegex ? { filenameRegex: params.filenameRegex } : {}),
+        limit: params.limit ?? 10,
+        orderBy: ["-startTime"],
+      });
+      return { downloads: items.map((d) => ({ id: d.id, filename: d.filename, url: d.url, state: d.state, totalBytes: d.totalBytes, exists: d.exists })) };
+    }
+    // === History API — needs history permission ===
+    case "history.search": {
+      if (!chrome.history) throw new Error("chrome.history API unavailable; reload the extension after granting the history permission");
+      const results = await chrome.history.search({
+        text: params.text ?? "",
+        startTime: params.startTime ?? (Date.now() - 7 * 24 * 60 * 60 * 1000),
+        maxResults: params.maxResults ?? 20,
+      });
+      return { results: results.map((h) => ({ url: h.url, title: h.title, lastVisitTime: h.lastVisitTime, visitCount: h.visitCount })) };
+    }
+    case "history.deleteUrl": {
+      if (!chrome.history) throw new Error("chrome.history API unavailable; reload the extension after granting the history permission");
+      await chrome.history.deleteUrl({ url: params.url });
+      return { deleted: true, url: params.url };
+    }
+    // === Sessions API — needs sessions permission ===
+    case "sessions.recent": {
+      if (!chrome.sessions) throw new Error("chrome.sessions API unavailable; reload the extension after granting the sessions permission");
+      const result = await chrome.sessions.getRecentlyClosed({ maxResults: params.maxResults ?? 10 });
+      return { sessions: result.map((s) => {
+        if (s.tab) return { type: "tab", tab: { id: s.tab.id, url: s.tab.url, title: s.tab.title, windowId: s.tab.windowId }, lastModified: s.lastModified };
+        if (s.window) return { type: "window", tabs: (s.window.tabs || []).map((t) => ({ id: t.id, url: t.url, title: t.title })), lastModified: s.lastModified };
+        return { type: "unknown", lastModified: s.lastModified };
+      }) };
+    }
     default:
       throw new Error(`Unknown action: ${action}`);
   }
