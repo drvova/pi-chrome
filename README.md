@@ -17,11 +17,6 @@ You:    [keeps coding — agent never asked you to log in]
 
 ## Install
 
-```bash
-pi install npm:pi-chrome
-```
-
-Install from source:
 
 ```bash
 pi install github:drvova/pi-chrome
