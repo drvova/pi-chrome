@@ -66,8 +66,7 @@
 			"./extensions/chrome-profile-bridge/index.ts"
 		],
 		"skills": [
-			"./skills/pi-chrome",
-			"./skills/pi-chrome-qa"
+			"./skills/pi-chrome"
 		]
 	},
 	"peerDependencies": {
