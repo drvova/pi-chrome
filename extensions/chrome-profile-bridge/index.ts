@@ -59,7 +59,11 @@ const PI_CHROME_GLOBAL_KEY = "__piChromeProfileBridgeLoaded__";
 // reload) so a /reload — which tears down and re-evaluates the module — does not silently drop
 // an active /chrome authorize grant.
 const PI_CHROME_AUTH_KEY = "__piChromeProfileBridgeAuth__";
-const DEFAULT_HOST = process.env.PI_CHROME_BRIDGE_HOST ?? "127.0.0.1";
+// In WSL2 NAT mode the bridge must bind 0.0.0.0 (not 127.0.0.1) so Windows Chrome can
+// reach it through WSL2's localhost forwarding. In mirrored mode 127.0.0.1 would work too,
+// but we can't detect the mode at runtime — 0.0.0.0 covers both and is safe: WSL2's NAT
+// doesn't expose the port to the LAN without explicit portproxy setup.
+const DEFAULT_HOST = process.env.PI_CHROME_BRIDGE_HOST ?? (isWsl2() ? "0.0.0.0" : "127.0.0.1");
 const DEFAULT_PORT = Number(process.env.PI_CHROME_BRIDGE_PORT ?? "17318");
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TEXT_CHARS = 30_000;
@@ -236,6 +240,33 @@ function hostnameOf(url: string | undefined): string {
 	try { return new URL(url).hostname; } catch { return ""; }
 }
 
+// Detect WSL2: /proc/version in WSL2 contains "Microsoft" (WSL2) or "microsoft" (newer builds).
+// Cached since the OS doesn't change mid-session.
+let wslChecked = false;
+let wslIsWsl2 = false;
+function isWsl2(): boolean {
+	if (wslChecked) return wslIsWsl2;
+	wslChecked = true;
+	if (process.platform !== "linux") return false;
+	try {
+		const version = readFileSync("/proc/version", "utf8");
+		wslIsWsl2 = /microsoft/i.test(version);
+	} catch {
+		// Not readable or doesn't exist — not WSL.
+	}
+	return wslIsWsl2;
+}
+
+// Convert a WSL2 Linux path to a Windows path via wslpath. Best-effort; falls back
+// to the original Linux path if wslpath is unavailable or fails.
+function toWindowsPath(linuxPath: string): string {
+	try {
+		const { execSync } = require("node:child_process");
+		return execSync(`wslpath -w ${JSON.stringify(linuxPath)}`, { encoding: "utf8", timeout: 3_000 }).trim();
+	} catch {
+		return linuxPath;
+	}
+}
 // Description of a click/type/fill result's significant fields so the agent doesn't have to
 // guess whether the action actually changed the page.
 function summarizeActionResult(result: unknown): string | undefined {
@@ -1055,8 +1086,17 @@ Usage rules:
 					lines.push(`⚠ Couldn't inspect the active tab: ${(error as Error).message}`);
 				}
 			} else if (versionMismatch) {
-				lines.push(`… Skipped the remaining checks until you reload the Chrome extension.`);
+			lines.push(`… Skipped the remaining checks until you reload the Chrome extension.`);
+		}
+
+		if (isWsl2()) {
+			lines.push(`• Detected WSL2. Bridge binds 0.0.0.0:${DEFAULT_PORT} for Windows localhost forwarding.`);
+			lines.push(`  Windows Chrome should connect to http://localhost:${DEFAULT_PORT} or http://127.0.0.1:${DEFAULT_PORT}.`);
+			if (!extensionAlive) {
+				lines.push(`  If Chrome can't connect, verify WSL2 is running and try 'wsl --shutdown' then restart.`);
+				lines.push(`  Alternatively, set networkingMode=mirrored in %UserProfile%\.wslconfig for direct localhost.`);
 			}
+		}
 
 		ctx.ui.notify(lines.join("\n"), "info");
 	};
@@ -1133,21 +1173,29 @@ Usage rules:
 
 	const onboardHandler = async (ctx: ExtensionContext) => {
 		const extensionPath = browserExtensionPath();
+		const wsl = isWsl2();
+		const displayPath = wsl ? toWindowsPath(extensionPath) : extensionPath;
 		const proceed = await ctx.ui.confirm(
 			"Install the pi-chrome Chrome extension?",
-			`This opens Chrome's extensions page and reveals the folder pi-chrome needs you to load.\n\nWhen the windows open, in Chrome:\n  1. Turn on 'Developer mode' (top-right toggle).\n  2. Click 'Load unpacked' and choose the folder that just opened in Finder, or paste this path:\n     ${extensionPath}\n\nPress Enter to continue, or Esc to cancel.`,
+			`This opens Chrome's extensions page and reveals the folder pi-chrome needs you to load.${wsl ? "\n\nNote: You are running in WSL2. The folder path has been converted to Windows format and copied to your clipboard." : ""}\n\nWhen the windows open, in Chrome:\n  1. Turn on 'Developer mode' (top-right toggle).\n  2. Click 'Load unpacked' and choose the folder, or paste this path:\n     ${displayPath}\n\nPress Enter to continue, or Esc to cancel.`,
 		);
 		if (!proceed) {
 			ctx.ui.notify("Cancelled. You can run /chrome onboard again whenever you're ready.", "info");
 			return;
 		}
+
 		if (process.platform === "darwin") {
 			await pi.exec("open", ["-a", "Google Chrome", "chrome://extensions"], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
 			await pi.exec("open", ["-R", extensionPath], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
 			await pi.exec("sh", ["-lc", `printf %s ${JSON.stringify(extensionPath)} | pbcopy`], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
+		} else if (wsl) {
+			const winPath = toWindowsPath(extensionPath);
+			await pi.exec("cmd.exe", ["/c", "start", "", "chrome://extensions"], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
+			await pi.exec("explorer.exe", ["/select,", winPath.replace(/\//g, "\\\\")], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
+			await pi.exec("sh", ["-lc", `printf %s ${JSON.stringify(winPath)} | clip.exe`], { cwd: workspaceCwd(ctx), timeout: 5_000 }).catch(() => undefined);
 		}
 		ctx.ui.notify(
-			"Chrome and Finder should be open. The extension folder path is on your clipboard. After you click 'Load unpacked' and pick it, run /chrome doctor to confirm everything is connected.",
+			`Chrome and ${wsl ? "Explorer" : "Finder"} should be open. The extension folder path (${wsl ? "Windows" : "native"}) is on your clipboard. After you click 'Load unpacked' and pick it, run /chrome doctor to confirm everything is connected.`,
 			"info",
 		);
 	};
